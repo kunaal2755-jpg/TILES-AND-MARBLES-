@@ -13,7 +13,22 @@ data class AdminUser(
     val uid: String = "",
     val email: String = "",
     val name: String = "",
+    val adminId: String = "",
+    val shopName: String = "",
+    val mobile: String = "",
+    val passwordHash: String = "",
+    @get:PropertyName("isMasterAdmin")
+    @field:PropertyName("isMasterAdmin")
+    val isMasterAdmin: Boolean = false,
     @ServerTimestamp val createdAt: Timestamp? = null
+)
+
+@IgnoreExtraProperties
+data class AppBootstrapStatus(
+    val masterAdminInitialized: Boolean = false,
+    val supportPhone: String = "+919876543210",
+    val supportWhatsapp: String = "+919876543210",
+    @ServerTimestamp val updatedAt: Timestamp? = null
 )
 
 @IgnoreExtraProperties
@@ -46,6 +61,11 @@ data class PlatformConfig(
     val planYearlyPrice: Double = 7999.0,
     val customPlanPrice: Double = 14999.0,
     val freeTrialDays: Long = 14L,
+    val masterAdminInitialized: Boolean = false,
+    val masterAdminUid: String = "",
+    val masterAdminId: String = "",
+    val masterAdminShopId: String = "",
+    val masterAdminMobile: String = "",
     @ServerTimestamp val updatedAt: Timestamp? = null
 )
 
@@ -92,10 +112,31 @@ data class Shop(
     val autoAttendanceEnabled: Boolean = false,
     val autoAttendanceTime: String = "09:30",
     val activeDevices: List<String> = emptyList(),
+    val claimedByOwner: Boolean = true,
+    val lastClaimProof: String = "",
     val dataAccessGranted: Boolean = false,
     val dataAccessReason: String = "",
     val dataAccessAdminEmail: String = "",
     val dataAccessExpiryMillis: Long = 0L,
+    @ServerTimestamp val createdAt: Timestamp? = null,
+    @ServerTimestamp val updatedAt: Timestamp? = null
+)
+
+@IgnoreExtraProperties
+data class ShopDirectoryEntry(
+    @DocumentId val id: String = "",
+    val shopId: String = "",
+    val shopCode: String = "",
+    val shopName: String = "",
+    val ownerUid: String = "",
+    val linkedEmailHint: String = "",
+    val mobile: String = "",
+    val passwordHash: String = "",
+    @get:PropertyName("isMasterAdmin")
+    @field:PropertyName("isMasterAdmin")
+    val isMasterAdmin: Boolean = false,
+    val claimedByOwner: Boolean = true,
+    val status: String = "active",
     @ServerTimestamp val createdAt: Timestamp? = null,
     @ServerTimestamp val updatedAt: Timestamp? = null
 )

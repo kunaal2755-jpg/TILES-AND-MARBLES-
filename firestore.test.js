@@ -230,3 +230,189 @@ test("Data Access Request workflow: Admin requests, Shop Owner approves or revok
     })
   );
 });
+
+test("app_bootstrap/status allows unauthenticated single-doc get, blocks list/spoof, and locks after Master Admin setup", async () => {
+  const unauth = testEnv.unauthenticatedContext().firestore();
+  await assertSucceeds(unauth.collection("app_bootstrap").doc("status").get());
+  await assertFails(unauth.collection("app_bootstrap").get());
+  await assertFails(
+    unauth.collection("app_bootstrap").doc("status").set({
+      masterAdminInitialized: true,
+      supportPhone: "9876543210",
+      supportWhatsapp: "9876543210",
+      updatedAt: tsNow(),
+    })
+  );
+
+  // Authenticated attacker cannot create app_bootstrap/status without atomic Master Admin + platform_config
+  const bob = testEnv.authenticatedContext(BOB_UID, { email: "bob@example.com" }).firestore();
+  await assertFails(
+    bob.collection("app_bootstrap").doc("status").set({
+      masterAdminInitialized: true,
+      supportPhone: "9999999999",
+      supportWhatsapp: "9999999999",
+      updatedAt: tsNow(),
+    })
+  );
+});
+
+test("First-Time Master Admin setup succeeds once and cannot be overwritten or deleted", async () => {
+  const alice = testEnv.authenticatedContext(ALICE_UID, { email: "alice@example.com" }).firestore();
+  const batch = alice.batch();
+  batch.set(alice.collection("admins").doc(ALICE_UID), {
+    uid: ALICE_UID,
+    email: "alice@example.com",
+    name: "Alice Master",
+    adminId: "MASTER01",
+    shopName: "Alice Marble House",
+    mobile: "9876543210",
+    passwordHash: "hash_master",
+    isMasterAdmin: true,
+    createdAt: tsNow(),
+  });
+  batch.set(alice.collection("platform_config").doc("global"), {
+    brandingName: "TileVault Pro",
+    supportPhone: "9876543210",
+    masterAdminInitialized: true,
+    masterAdminUid: ALICE_UID,
+    masterAdminId: "MASTER01",
+    masterAdminShopId: "shop_master_1",
+    masterAdminMobile: "9876543210",
+    updatedAt: tsNow(),
+  });
+  batch.set(alice.collection("app_bootstrap").doc("status"), {
+    masterAdminInitialized: true,
+    supportPhone: "9876543210",
+    supportWhatsapp: "9876543210",
+    updatedAt: tsNow(),
+  });
+  batch.set(alice.collection("admin_secrets").doc("config"), {
+    masterAdminPinHash: "pinhash",
+    updatedAt: tsNow(),
+  });
+  await assertSucceeds(batch.commit());
+
+  // Unauthenticated launch now sees masterAdminInitialized == true
+  const unauth = testEnv.unauthenticatedContext().firestore();
+  const statusSnap = await assertSucceeds(unauth.collection("app_bootstrap").doc("status").get());
+  if (!statusSnap.exists || statusSnap.data().masterAdminInitialized !== true) {
+    throw new Error("Expected app_bootstrap/status to reflect initialized Master Admin");
+  }
+
+  // Another user CANNOT overwrite or claim Master Admin or reset app_bootstrap once initialized
+  const bob = testEnv.authenticatedContext(BOB_UID, { email: "bob@example.com" }).firestore();
+  await assertFails(
+    bob.collection("admins").doc(BOB_UID).set({
+      uid: BOB_UID,
+      email: "bob@example.com",
+      name: "Bob Hijack",
+      adminId: "MASTER02",
+      isMasterAdmin: true,
+      createdAt: tsNow(),
+    })
+  );
+  await assertFails(
+    bob.collection("app_bootstrap").doc("status").update({
+      supportPhone: "1111111111",
+      updatedAt: tsNow(),
+    })
+  );
+
+  // Even Master Admin CANNOT delete admin/bootstrap records or reset masterAdminInitialized back to false
+  await assertFails(alice.collection("admins").doc(ALICE_UID).delete());
+  await assertFails(alice.collection("app_bootstrap").doc("status").delete());
+  await assertFails(
+    alice.collection("app_bootstrap").doc("status").update({
+      masterAdminInitialized: false,
+      supportPhone: "9876543210",
+      supportWhatsapp: "9876543210",
+      updatedAt: tsNow(),
+    })
+  );
+  await assertFails(
+    alice.collection("platform_config").doc("global").update({
+      masterAdminInitialized: false,
+      updatedAt: tsNow(),
+    })
+  );
+
+  // Master Admin CAN update supportPhone while keeping masterAdminInitialized == true
+  await assertSucceeds(
+    alice.collection("app_bootstrap").doc("status").update({
+      masterAdminInitialized: true,
+      supportPhone: "9111122222",
+      supportWhatsapp: "9111122222",
+      updatedAt: tsNow(),
+    })
+  );
+});
+
+test("shop_directory denies list enumeration and enforces claim proof on first login", async () => {
+  const admin = testEnv.authenticatedContext(ADMIN_UID, {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+
+  const unclaimedShop = shopPayload(ADMIN_UID, "SHP-NEW");
+  unclaimedShop.claimedByOwner = false;
+  unclaimedShop.passwordHash = "secret_hash_abc";
+  await assertSucceeds(admin.collection("shops").doc("shop_new").set(unclaimedShop));
+  await assertSucceeds(
+    admin.collection("shop_directory").doc("SHP-NEW").set({
+      shopId: "shop_new",
+      shopCode: "SHP-NEW",
+      shopName: "New Marble Co",
+      ownerUid: ADMIN_UID,
+      linkedEmailHint: "",
+      mobile: "9876543210",
+      passwordHash: "secret_hash_abc",
+      isMasterAdmin: false,
+      claimedByOwner: false,
+      status: "active",
+      createdAt: tsNow(),
+      updatedAt: tsNow(),
+    })
+  );
+
+  const bob = testEnv.authenticatedContext(BOB_UID, { email: "bob@tiles.com" }).firestore();
+  // Listing directory to enumerate all shops is denied
+  await assertFails(bob.collection("shop_directory").get());
+  // Exact lookup by Shop ID is allowed
+  await assertSucceeds(bob.collection("shop_directory").doc("SHP-NEW").get());
+
+  // Claiming with wrong password proof fails
+  const wrongBatch = bob.batch();
+  wrongBatch.update(bob.collection("shops").doc("shop_new"), {
+    ownerUid: BOB_UID,
+    claimedByOwner: true,
+    lastClaimProof: "wrong_hash",
+    activeDevices: ["Pixel"],
+    email: "bob@tiles.com",
+    updatedAt: tsNow(),
+  });
+  wrongBatch.update(bob.collection("shop_directory").doc("SHP-NEW"), {
+    ownerUid: BOB_UID,
+    linkedEmailHint: "bo***@tiles.com",
+    claimedByOwner: true,
+    updatedAt: tsNow(),
+  });
+  await assertFails(wrongBatch.commit());
+
+  // Claiming with matching proof succeeds
+  const validBatch = bob.batch();
+  validBatch.update(bob.collection("shops").doc("shop_new"), {
+    ownerUid: BOB_UID,
+    claimedByOwner: true,
+    lastClaimProof: "secret_hash_abc",
+    activeDevices: ["Pixel"],
+    email: "bob@tiles.com",
+    updatedAt: tsNow(),
+  });
+  validBatch.update(bob.collection("shop_directory").doc("SHP-NEW"), {
+    ownerUid: BOB_UID,
+    linkedEmailHint: "bo***@tiles.com",
+    claimedByOwner: true,
+    updatedAt: tsNow(),
+  });
+  await assertSucceeds(validBatch.commit());
+});

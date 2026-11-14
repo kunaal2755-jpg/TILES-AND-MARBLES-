@@ -53,11 +53,22 @@ service cloud.firestore {
              isValidTs(data.createdAt);
     }
 
+    function isMasterAdminNotYetSet() {
+      return !exists(/databases/$(database)/documents/platform_config/global) ||
+             !('masterAdminInitialized' in get(/databases/$(database)/documents/platform_config/global).data) ||
+             get(/databases/$(database)/documents/platform_config/global).data.masterAdminInitialized == false;
+    }
+
     // --- ENTITY VALIDATION BLUEPRINTS ---
     function isValidAdminUser(data) {
       return isReqString(data, 'uid', 1, 128) &&
              isReqString(data, 'email', 3, 200) &&
              isReqString(data, 'name', 1, 120) &&
+             (!('adminId' in data) || (data.adminId is string && data.adminId.size() <= 40)) &&
+             (!('shopName' in data) || (data.shopName is string && data.shopName.size() <= 120)) &&
+             (!('mobile' in data) || (data.mobile is string && data.mobile.size() <= 30)) &&
+             (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128)) &&
+             (!('isMasterAdmin' in data) || data.isMasterAdmin is bool) &&
              isValidTs(data.createdAt);
     }
 
@@ -94,6 +105,23 @@ service cloud.firestore {
              (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128)) &&
              (!('secretCodeHash' in data) || (data.secretCodeHash is string && data.secretCodeHash.size() <= 128)) &&
              (!('activeDevices' in data) || (data.activeDevices is list && data.activeDevices.size() <= 20)) &&
+             (!('claimedByOwner' in data) || data.claimedByOwner is bool) &&
+             (!('lastClaimProof' in data) || (data.lastClaimProof is string && data.lastClaimProof.size() <= 128)) &&
+             isValidTs(data.createdAt) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidShopDirectoryEntry(data) {
+      return isReqString(data, 'shopId', 1, 128) &&
+             isReqString(data, 'shopCode', 2, 40) &&
+             isReqString(data, 'shopName', 2, 120) &&
+             isReqString(data, 'ownerUid', 1, 128) &&
+             isReqString(data, 'passwordHash', 0, 128) &&
+             data.status in ['active', 'pending', 'blocked', 'suspended', 'archived'] &&
+             (!('linkedEmailHint' in data) || (data.linkedEmailHint is string && data.linkedEmailHint.size() <= 120)) &&
+             (!('mobile' in data) || (data.mobile is string && data.mobile.size() <= 30)) &&
+             (!('isMasterAdmin' in data) || data.isMasterAdmin is bool) &&
+             (!('claimedByOwner' in data) || data.claimedByOwner is bool) &&
              isValidTs(data.createdAt) &&
              isValidTs(data.updatedAt);
     }
@@ -271,23 +299,101 @@ service cloud.firestore {
 
     // --- COLLECTION RULES ---
 
+    match /app_bootstrap/{statusId} {
+      allow get: if statusId == 'status';
+      allow list: if false;
+      allow create: if isSignedIn() && statusId == 'status' &&
+                       incoming().keys().hasOnly(['masterAdminInitialized', 'supportPhone', 'supportWhatsapp', 'updatedAt']) &&
+                       incoming().masterAdminInitialized == true &&
+                       isReqString(incoming(), 'supportPhone', 3, 30) &&
+                       isReqString(incoming(), 'supportWhatsapp', 3, 30) &&
+                       isValidTs(incoming().updatedAt) && (
+                         (existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+                          getAfter(/databases/$(database)/documents/platform_config/global).data.masterAdminInitialized == true) ||
+                         (exists(/databases/$(database)/documents/platform_config/global) &&
+                          get(/databases/$(database)/documents/platform_config/global).data.masterAdminInitialized == true)
+                       );
+      allow update: if isSuperAdmin() && statusId == 'status' &&
+                       incoming().keys().hasOnly(['masterAdminInitialized', 'supportPhone', 'supportWhatsapp', 'updatedAt']) &&
+                       incoming().masterAdminInitialized == true &&
+                       isReqString(incoming(), 'supportPhone', 3, 30) &&
+                       isReqString(incoming(), 'supportWhatsapp', 3, 30) &&
+                       isValidTs(incoming().updatedAt);
+      allow delete: if false;
+    }
+
     match /admins/{adminUid} {
       allow get: if isSignedIn() && (request.auth.uid == adminUid || isSuperAdmin());
       allow list: if isSuperAdmin();
-      allow create, update: if isSuperAdmin() && isValidId(adminUid) && isValidAdminUser(incoming());
-      allow delete: if isSuperAdmin() && isValidId(adminUid);
+      allow create: if isSignedIn() && isValidId(adminUid) && isValidAdminUser(incoming()) && (
+                       isSuperAdmin() ||
+                       (request.auth.uid == adminUid &&
+                        incoming().uid == request.auth.uid &&
+                        incoming().isMasterAdmin == true &&
+                        isMasterAdminNotYetSet())
+                    );
+      allow update: if isSuperAdmin() && isValidId(adminUid) && isValidAdminUser(incoming()) &&
+                       incoming().uid == existing().uid &&
+                       incoming().createdAt == existing().createdAt;
+      allow delete: if false; // Never delete Master/Admin accounts
     }
 
     match /platform_config/{configId} {
       allow get, list: if isSignedIn();
-      allow create, update: if isSuperAdmin() && isValidId(configId) && isValidPlatformConfig(incoming());
+      allow create: if isSignedIn() && isValidId(configId) && isValidPlatformConfig(incoming()) && (
+                       isSuperAdmin() ||
+                       (configId == 'global' &&
+                        isMasterAdminNotYetSet() &&
+                        incoming().masterAdminInitialized == true &&
+                        incoming().masterAdminUid == request.auth.uid)
+                    );
+      allow update: if isSignedIn() && isValidId(configId) && isValidPlatformConfig(incoming()) && (
+                       (isSuperAdmin() &&
+                        (!('masterAdminInitialized' in existing()) ||
+                         existing().masterAdminInitialized == false ||
+                         (incoming().masterAdminInitialized == true && incoming().masterAdminUid == existing().masterAdminUid))) ||
+                       (configId == 'global' &&
+                        isMasterAdminNotYetSet() &&
+                        incoming().masterAdminInitialized == true &&
+                        incoming().masterAdminUid == request.auth.uid)
+                    );
       allow delete: if false;
     }
 
     match /admin_secrets/{secretId} {
       allow get, list: if isSuperAdmin();
-      allow create, update: if isSuperAdmin() && isValidId(secretId) && isValidAdminSecrets(incoming());
+      allow create, update: if isSignedIn() && isValidId(secretId) && isValidAdminSecrets(incoming()) && (
+                               isSuperAdmin() ||
+                               (isMasterAdminNotYetSet() && existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid)))
+                            );
       allow delete: if false;
+    }
+
+    match /shop_directory/{shopCode} {
+      allow get: if isSignedIn() && isValidId(shopCode);
+      allow list: if isSuperAdmin();
+      allow create: if isSignedIn() && isValidId(shopCode) && isValidShopDirectoryEntry(incoming()) && (
+                       isSuperAdmin() ||
+                       incoming().ownerUid == request.auth.uid
+                    );
+      allow update: if isSignedIn() && isValidId(shopCode) && isValidShopDirectoryEntry(incoming()) && (
+                       isSuperAdmin() ||
+                       (existing().ownerUid == request.auth.uid &&
+                        incoming().ownerUid == existing().ownerUid &&
+                        incoming().shopId == existing().shopId &&
+                        incoming().createdAt == existing().createdAt) ||
+                       (existing().claimedByOwner == false &&
+                        existing().status == 'active' &&
+                        incoming().ownerUid == request.auth.uid &&
+                        incoming().claimedByOwner == true &&
+                        incoming().shopId == existing().shopId &&
+                        incoming().shopCode == existing().shopCode &&
+                        incoming().passwordHash == existing().passwordHash &&
+                        incoming().createdAt == existing().createdAt &&
+                        getAfter(/databases/$(database)/documents/shops/$(incoming().shopId)).data.ownerUid == request.auth.uid &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['ownerUid', 'linkedEmailHint', 'claimedByOwner', 'updatedAt']))
+                    );
+      allow delete: if false; // Never delete shop accounts
     }
 
     match /shops/{shopId} {
@@ -306,6 +412,15 @@ service cloud.firestore {
                           'showPricesOnPdfDefault', 'defaultPaperSize', 'autoAttendanceEnabled',
                           'autoAttendanceTime', 'activeDevices', 'dataAccessGranted',
                           'dataAccessReason', 'dataAccessAdminEmail', 'dataAccessExpiryMillis', 'updatedAt'
+                        ])) ||
+                       (existing().claimedByOwner == false &&
+                        existing().status == 'active' &&
+                        incoming().claimedByOwner == true &&
+                        incoming().ownerUid == request.auth.uid &&
+                        incoming().lastClaimProof == existing().passwordHash &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().diff(existing()).affectedKeys().hasOnly([
+                          'ownerUid', 'claimedByOwner', 'lastClaimProof', 'activeDevices', 'email', 'updatedAt'
                         ]))
                     );
       allow delete: if false;
@@ -555,7 +670,10 @@ service cloud.firestore {
 
     match /admin_logs/{logId} {
       allow get, list: if isSuperAdmin();
-      allow create: if isSuperAdmin() && isValidId(logId) && isValidAdminLog(incoming());
+      allow create: if isSignedIn() && isValidId(logId) && isValidAdminLog(incoming()) && (
+                       isSuperAdmin() ||
+                       existsAfter(/databases/$(database)/documents/admins/$(request.auth.uid))
+                    );
       allow update, delete: if false;
     }
   }

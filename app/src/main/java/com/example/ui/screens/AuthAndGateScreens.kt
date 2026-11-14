@@ -33,7 +33,9 @@ import androidx.credentials.GetCredentialRequest
 import androidx.credentials.exceptions.GetCredentialCancellationException
 import com.example.R
 import com.example.data.firebase.AppLanguage
+import com.example.data.firebase.NetworkUtils
 import com.example.data.firebase.SecurityUtils
+import com.example.data.firebase.ValidationUtils
 import com.example.data.model.PlatformConfig
 import com.example.data.model.Shop
 import com.example.ui.components.*
@@ -103,6 +105,10 @@ fun onGoogleSignInClicked(
     scope: CoroutineScope,
     onAuthCancelled: () -> Unit = {}
 ) {
+    if (!NetworkUtils.isOnline(context)) {
+        onAuthError("Internet connection is unavailable. Please connect to Wi-Fi or Mobile Data.\nइंटरनेट उपलब्ध नहीं है। कृपया नेटवर्क जांचें।")
+        return
+    }
     val clientId = try {
         context.getString(R.string.default_web_client_id)
     } catch (e: Exception) {
@@ -132,7 +138,7 @@ fun onGoogleSignInClicked(
             onAuthCancelled()
         } catch (e: Exception) {
             Log.e("Auth", "Google Sign-In failed", e)
-            onAuthError(e.localizedMessage ?: "Sign in failed")
+            onAuthError(NetworkUtils.mapCloudError(e))
         }
     }
 }
@@ -160,7 +166,10 @@ fun signOut(
 fun AuthScreen(
     supportPhone: String = "+919876543210",
     supportWhatsapp: String = "+919876543210",
-    onAuthSuccess: () -> Unit
+    initialShopCode: String = "",
+    registrationSuccessMessage: String? = null,
+    skipAutoSignIn: Boolean = false,
+    onAuthSuccess: (prefillShopCode: String, prefillPassword: String) -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -168,17 +177,19 @@ fun AuthScreen(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showHelpDialog by remember { mutableStateOf(false) }
-    var shopCodeInput by remember { mutableStateOf("") }
+    var shopCodeInput by remember(initialShopCode) { mutableStateOf(initialShopCode) }
     var shopPinInput by remember { mutableStateOf("") }
 
-    LaunchedEffect(Unit) {
-        attemptAutoSignIn(
-            context = context,
-            credentialManager = credentialManager,
-            onAuthSuccess = onAuthSuccess,
-            onUnauthenticated = {},
-            scope = scope
-        )
+    LaunchedEffect(skipAutoSignIn) {
+        if (!skipAutoSignIn) {
+            attemptAutoSignIn(
+                context = context,
+                credentialManager = credentialManager,
+                onAuthSuccess = { onAuthSuccess(shopCodeInput.trim(), shopPinInput) },
+                onUnauthenticated = {},
+                scope = scope
+            )
+        }
     }
 
     Box(
@@ -243,6 +254,29 @@ fun AuthScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 PremiumCard {
+                    if (registrationSuccessMessage != null) {
+                        Surface(
+                            color = SuccessGreenSoft,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.4f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = SuccessGreen)
+                                Spacer(Modifier.width(8.dp))
+                                Text(
+                                    text = registrationSuccessMessage,
+                                    color = SuccessGreen,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(12.dp))
+                    }
+
                     Text(
                         text = "Shop Owner & Multi-Device Cloud Login",
                         style = MaterialTheme.typography.titleLarge,
@@ -250,22 +284,22 @@ fun AuthScreen(
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "Sign in securely with Google to sync inventory, bills, ledgers, staff salary & backups across all your devices.",
+                        text = "Sign in with Google and enter your Shop ID / Admin ID & Password to sync inventory, bills, ledgers, staff salary & backups on any phone.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = SlateMuted
                     )
                     Spacer(Modifier.height(14.dp))
                     FormInputField(
                         value = shopCodeInput,
-                        onValueChange = { shopCodeInput = it },
-                        label = "Shop ID / Mobile Number (Optional quick-link)",
+                        onValueChange = { shopCodeInput = it.uppercase(); errorMessage = null },
+                        label = "Shop ID / Admin ID",
                         leadingIcon = Icons.Default.Store
                     )
                     Spacer(Modifier.height(10.dp))
                     FormInputField(
                         value = shopPinInput,
-                        onValueChange = { shopPinInput = it },
-                        label = "Shop Password / Access PIN",
+                        onValueChange = { shopPinInput = it; errorMessage = null },
+                        label = "Password",
                         isPassword = true,
                         leadingIcon = Icons.Default.Lock
                     )
@@ -289,6 +323,17 @@ fun AuthScreen(
 
                     Button(
                         onClick = {
+                            if (shopCodeInput.isNotBlank() || shopPinInput.isNotBlank()) {
+                                val idErr = ValidationUtils.validateShopOrAdminId(shopCodeInput)
+                                val passErr = if (shopPinInput.isBlank()) {
+                                    "Please enter your Password / कृपया पासवर्ड डालें"
+                                } else null
+                                val err = idErr ?: passErr
+                                if (err != null) {
+                                    errorMessage = err
+                                    return@Button
+                                }
+                            }
                             isLoading = true
                             errorMessage = null
                             onGoogleSignInClicked(
@@ -296,7 +341,7 @@ fun AuthScreen(
                                 credentialManager = credentialManager,
                                 onAuthSuccess = {
                                     isLoading = false
-                                    onAuthSuccess()
+                                    onAuthSuccess(shopCodeInput.trim(), shopPinInput)
                                 },
                                 onAuthError = { msg ->
                                     isLoading = false
@@ -399,7 +444,7 @@ fun AuthScreen(
             title = { Text("Account & Admin Assistance", color = RoyalNavy) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("• Login Problem: Ensure you sign in with the Google account registered with your shop.", style = MaterialTheme.typography.bodyMedium)
+                    Text("• Login Problem: Sign in with Google, then enter the Shop ID & Password created by Super Admin.", style = MaterialTheme.typography.bodyMedium)
                     Text("• Password Reset: Contact Admin Support for instant PIN/credential verification.", style = MaterialTheme.typography.bodyMedium)
                     Text("• Account Block / Subscription: Use Call or WhatsApp below to connect with Super Admin ($supportPhone).", style = MaterialTheme.typography.bodyMedium)
                 }
@@ -418,20 +463,366 @@ fun AuthScreen(
 }
 
 @Composable
+fun NetworkErrorRetryScreen(
+    message: String,
+    language: AppLanguage,
+    onToggleLanguage: () -> Unit,
+    onRetry: () -> Unit,
+    onSignOut: (() -> Unit)? = null
+) {
+    val s = LocalAppStrings.current
+    Scaffold(
+        topBar = {
+            NavyTopHeader(
+                title = s.appTitle,
+                subtitle = s.subtitle,
+                language = language,
+                onToggleLanguage = onToggleLanguage,
+                actions = {
+                    if (onSignOut != null) {
+                        IconButton(onClick = onSignOut) {
+                            Icon(Icons.Default.Logout, contentDescription = s.logout, tint = Color.White)
+                        }
+                    }
+                }
+            )
+        },
+        containerColor = LightBackground
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .padding(20.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            PremiumCard(modifier = Modifier.widthIn(max = 520.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(DangerRedSoft),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.CloudOff, contentDescription = null, tint = DangerRed, modifier = Modifier.size(28.dp))
+                    }
+                    Spacer(Modifier.width(14.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(s.networkErrorTitle, style = MaterialTheme.typography.titleMedium, color = RoyalNavy)
+                        Text(s.networkErrorSubtitle, style = MaterialTheme.typography.bodySmall, color = SlateMuted)
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Surface(
+                    color = DangerRedSoft,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = message,
+                        color = DangerRed,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(12.dp)
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                Button(
+                    onClick = onRetry,
+                    colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp)
+                        .testTag("retry_connection_button")
+                ) {
+                    Icon(Icons.Default.Refresh, contentDescription = null, tint = AmberGold)
+                    Spacer(Modifier.width(8.dp))
+                    Text(s.retryButton, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun FirstTimeSuperAdminSetupScreen(
+    language: AppLanguage,
+    authenticatedEmail: String?,
+    onToggleLanguage: () -> Unit,
+    onSubmit: (
+        adminId: String,
+        shopName: String,
+        ownerName: String,
+        mobile: String,
+        passwordPlain: String,
+        confirmPasswordPlain: String,
+        deviceName: String,
+        onResult: (Result<String>) -> Unit
+    ) -> Unit,
+    onSignOut: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val credentialManager = remember { CredentialManager.create(context) }
+    val s = LocalAppStrings.current
+
+    var shopName by remember { mutableStateOf("") }
+    var ownerName by remember { mutableStateOf(Firebase.auth.currentUser?.displayName ?: "") }
+    var mobile by remember { mutableStateOf("") }
+    var adminId by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    var isSubmitting by remember { mutableStateOf(false) }
+    var errorText by remember { mutableStateOf<String?>(null) }
+
+    Scaffold(
+        topBar = {
+            NavyTopHeader(
+                title = s.appTitle,
+                subtitle = s.createSuperAdminTitle,
+                language = language,
+                onToggleLanguage = onToggleLanguage,
+                actions = {
+                    if (!authenticatedEmail.isNullOrBlank()) {
+                        IconButton(onClick = onSignOut) {
+                            Icon(Icons.Default.Logout, contentDescription = s.logout, tint = Color.White)
+                        }
+                    }
+                }
+            )
+        },
+        containerColor = LightBackground
+    ) { padding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Column(
+                modifier = Modifier.widthIn(max = 580.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Surface(
+                    color = RoyalNavy,
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(18.dp)) {
+                        StatusBadge(s.masterAdminBadge, AmberGold, RoyalNavy)
+                        Spacer(Modifier.height(8.dp))
+                        Text(s.createSuperAdminTitle, style = MaterialTheme.typography.titleLarge, color = Color.White)
+                        Spacer(Modifier.height(4.dp))
+                        Text(s.createSuperAdminSubtitle, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.85f))
+                    }
+                }
+
+                PremiumCard {
+                    FormInputField(
+                        value = shopName,
+                        onValueChange = { shopName = it; errorText = null },
+                        label = s.shopNameLabel,
+                        leadingIcon = Icons.Default.Store
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    FormInputField(
+                        value = ownerName,
+                        onValueChange = { ownerName = it; errorText = null },
+                        label = s.ownerNameLabel,
+                        leadingIcon = Icons.Default.Person
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    FormInputField(
+                        value = mobile,
+                        onValueChange = { mobile = it; errorText = null },
+                        label = s.mobileNumberLabel,
+                        keyboardType = KeyboardType.Phone,
+                        leadingIcon = Icons.Default.Phone
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    FormInputField(
+                        value = adminId,
+                        onValueChange = { adminId = it.uppercase(); errorText = null },
+                        label = s.adminIdLabel,
+                        leadingIcon = Icons.Default.AdminPanelSettings,
+                        supportingText = "Letters, numbers, - or _ (4-30 chars, e.g. ADMIN01)"
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    FormInputField(
+                        value = password,
+                        onValueChange = { password = it; errorText = null },
+                        label = s.passwordLabel,
+                        isPassword = true,
+                        leadingIcon = Icons.Default.Lock
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    FormInputField(
+                        value = confirmPassword,
+                        onValueChange = { confirmPassword = it; errorText = null },
+                        label = s.confirmPasswordLabel,
+                        isPassword = true,
+                        leadingIcon = Icons.Default.LockReset
+                    )
+
+                    Spacer(Modifier.height(12.dp))
+                    Surface(
+                        color = LightBackground,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, RoyalNavy.copy(alpha = 0.14f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (authenticatedEmail.isNullOrBlank()) Icons.Default.Security else Icons.Default.VerifiedUser,
+                                contentDescription = null,
+                                tint = if (authenticatedEmail.isNullOrBlank()) RoyalNavy else SuccessGreen,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = if (authenticatedEmail.isNullOrBlank()) {
+                                    "Firebase Authentication (Google Sign-In) will verify and link your Master Admin account in Cloud Firestore."
+                                } else {
+                                    "Verified Google Account: $authenticatedEmail"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = RoyalNavy,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (!authenticatedEmail.isNullOrBlank()) {
+                                TextButton(onClick = onSignOut) {
+                                    Text("Switch", color = AmberGoldDark)
+                                }
+                            }
+                        }
+                    }
+
+                    if (errorText != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Surface(
+                            color = DangerRedSoft,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = errorText!!,
+                                color = DangerRed,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(16.dp))
+                    Button(
+                        onClick = {
+                            val validationError =
+                                ValidationUtils.validateShopName(shopName)
+                                    ?: ValidationUtils.validatePersonName(ownerName)
+                                    ?: ValidationUtils.validateMobile(mobile)
+                                    ?: ValidationUtils.validateShopOrAdminId(adminId)
+                                    ?: ValidationUtils.validatePassword(password, confirmPassword)
+                            if (validationError != null) {
+                                errorText = validationError
+                                return@Button
+                            }
+                            if (!NetworkUtils.isOnline(context)) {
+                                errorText = "Firebase / Internet connection is unavailable. Connect to internet and try again.\nFirebase या इंटरनेट उपलब्ध नहीं है। कृपया नेटवर्क जांचें।"
+                                return@Button
+                            }
+                            errorText = null
+                            isSubmitting = true
+                            val device = "${Build.MANUFACTURER} ${Build.MODEL}"
+
+                            val commitMasterAdmin: () -> Unit = {
+                                onSubmit(
+                                    adminId,
+                                    shopName,
+                                    ownerName,
+                                    mobile,
+                                    password,
+                                    confirmPassword,
+                                    device
+                                ) { res ->
+                                    isSubmitting = false
+                                    res.onFailure { err ->
+                                        errorText = NetworkUtils.mapCloudError(err)
+                                    }
+                                }
+                            }
+
+                            if (Firebase.auth.currentUser != null) {
+                                commitMasterAdmin()
+                            } else {
+                                onGoogleSignInClicked(
+                                    context = context,
+                                    credentialManager = credentialManager,
+                                    onAuthSuccess = { commitMasterAdmin() },
+                                    onAuthError = { msg ->
+                                        isSubmitting = false
+                                        errorText = msg
+                                    },
+                                    scope = scope,
+                                    onAuthCancelled = {
+                                        isSubmitting = false
+                                        errorText = "Google Sign-In is required to register the Master Admin account in Firebase.\nFirebase में मास्टर एडमिन अकाउंट बनाने के लिए Google सत्यापन ज़रूरी है।"
+                                    }
+                                )
+                            }
+                        },
+                        enabled = !isSubmitting,
+                        colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp)
+                            .testTag("create_master_admin_button")
+                    ) {
+                        if (isSubmitting) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(22.dp),
+                                color = AmberGold,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = AmberGold)
+                            Spacer(Modifier.width(8.dp))
+                            Text(s.createMasterAdminButton, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ShopOnboardingAndGateScreen(
     shops: List<Shop>,
     platformConfig: PlatformConfig,
     isSuperAdmin: Boolean,
     language: AppLanguage,
+    prefillShopCode: String = "",
+    prefillPassword: String = "",
+    initialCredentialError: String? = null,
     onToggleLanguage: () -> Unit,
     onSelectShop: (Shop) -> Unit,
-    onCreateShop: (String, String, String, String, String, String, String, String) -> Unit,
+    onCreateShop: (String, String, String, String, String, String, String, String, String, (Result<String>) -> Unit) -> Unit,
+    onLoginWithShopCredentials: (String, String, String, (Result<String>) -> Unit) -> Unit,
     onVerifyPasswordAndEnter: (Shop, String) -> Boolean,
     onOpenSuperAdmin: () -> Unit,
     onSignOut: () -> Unit
 ) {
     val context = LocalContext.current
-    var showCreateForm by remember { mutableStateOf(shops.isEmpty()) }
+    val s = LocalAppStrings.current
+    var showCreateForm by remember { mutableStateOf(false) }
+    var customShopCode by remember { mutableStateOf("") }
     var shopName by remember { mutableStateOf("") }
     var ownerName by remember { mutableStateOf(Firebase.auth.currentUser?.displayName ?: "") }
     var mobile by remember { mutableStateOf("") }
@@ -439,7 +830,13 @@ fun ShopOnboardingAndGateScreen(
     var gst by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var secretCode by remember { mutableStateOf("1234") }
+    var isCreatingShop by remember { mutableStateOf(false) }
     var validationErr by remember { mutableStateOf<String?>(null) }
+
+    var credShopCode by remember(prefillShopCode) { mutableStateOf(prefillShopCode) }
+    var credPassword by remember(prefillPassword) { mutableStateOf(prefillPassword) }
+    var isCredentialLoggingIn by remember { mutableStateOf(false) }
+    var credLoginError by remember(initialCredentialError) { mutableStateOf(initialCredentialError) }
 
     var pendingPasswordShop by remember { mutableStateOf<Shop?>(null) }
     var enteredShopPassword by remember { mutableStateOf("") }
@@ -449,7 +846,7 @@ fun ShopOnboardingAndGateScreen(
         topBar = {
             NavyTopHeader(
                 title = platformConfig.brandingName.ifBlank { "TileVault" },
-                subtitle = if (isSuperAdmin) "Super Admin & Shop Workspace" else "Select or Register Your Shop",
+                subtitle = if (isSuperAdmin) "Master Admin & Shop Workspace" else "Select or Sync Your Shop",
                 language = language,
                 onToggleLanguage = onToggleLanguage,
                 actions = {
@@ -517,9 +914,102 @@ fun ShopOnboardingAndGateScreen(
             }
 
             Column(modifier = Modifier.widthIn(max = 700.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // Cloud Multi-Device Login with Shop ID & Password
+                PremiumCard {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(RoyalNavy),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Default.CloudSync, contentDescription = null, tint = AmberGold)
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(s.shopIdLoginTitle, style = MaterialTheme.typography.titleMedium, color = RoyalNavy)
+                            Text(
+                                "Enter the Shop ID & Password assigned by Master Admin to sync all cloud records on this phone.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SlateMuted
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    FormInputField(
+                        value = credShopCode,
+                        onValueChange = { credShopCode = it.uppercase(); credLoginError = null },
+                        label = s.shopIdLabel,
+                        leadingIcon = Icons.Default.Store
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    FormInputField(
+                        value = credPassword,
+                        onValueChange = { credPassword = it; credLoginError = null },
+                        label = s.passwordLabel,
+                        isPassword = true,
+                        leadingIcon = Icons.Default.Lock
+                    )
+                    if (credLoginError != null) {
+                        Spacer(Modifier.height(10.dp))
+                        Surface(
+                            color = DangerRedSoft,
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = credLoginError!!,
+                                color = DangerRed,
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            val err = ValidationUtils.validateShopOrAdminId(credShopCode)
+                                ?: if (credPassword.isBlank()) "Password is required / पासवर्ड डालना ज़रूरी है" else null
+                            if (err != null) {
+                                credLoginError = err
+                                return@Button
+                            }
+                            credLoginError = null
+                            isCredentialLoggingIn = true
+                            val device = "${Build.MANUFACTURER} ${Build.MODEL}"
+                            onLoginWithShopCredentials(credShopCode, credPassword, device) { res ->
+                                isCredentialLoggingIn = false
+                                res.onFailure { e ->
+                                    credLoginError = NetworkUtils.mapCloudError(e)
+                                }
+                            }
+                        },
+                        enabled = !isCredentialLoggingIn,
+                        colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp)
+                            .testTag("shop_id_login_button")
+                    ) {
+                        if (isCredentialLoggingIn) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                color = AmberGold,
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Default.VerifiedUser, contentDescription = null, tint = AmberGold)
+                            Spacer(Modifier.width(8.dp))
+                            Text(s.loginAndSyncButton, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+
                 if (shops.isNotEmpty()) {
                     SectionHeaderRow(
-                        title = "Your Registered Shops (${shops.size})",
+                        title = "Your Synced Shops (${shops.size})",
                         actionText = if (showCreateForm) "Hide Form" else "+ New Shop",
                         onAction = { showCreateForm = !showCreateForm }
                     )
@@ -576,54 +1066,78 @@ fun ShopOnboardingAndGateScreen(
                             }
                         }
                     }
+                } else {
+                    SectionHeaderRow(
+                        title = "Register New Shop",
+                        actionText = if (showCreateForm) "Hide" else "+ Register Shop",
+                        onAction = { showCreateForm = !showCreateForm }
+                    )
                 }
 
                 if (showCreateForm) {
                     PremiumCard {
                         Text("Create New Tiles & Marbles Shop", style = MaterialTheme.typography.titleLarge, color = RoyalNavy)
                         Spacer(Modifier.height(10.dp))
-                        FormInputField(shopName, { shopName = it }, "Shop Name *", leadingIcon = Icons.Default.Store)
+                        FormInputField(customShopCode, { customShopCode = it.uppercase(); validationErr = null }, "Custom Shop ID (Optional, e.g. SHP101)", leadingIcon = Icons.Default.Badge)
                         Spacer(Modifier.height(8.dp))
-                        FormInputField(ownerName, { ownerName = it }, "Owner Full Name *", leadingIcon = Icons.Default.Person)
+                        FormInputField(shopName, { shopName = it; validationErr = null }, "Shop Name *", leadingIcon = Icons.Default.Store)
                         Spacer(Modifier.height(8.dp))
-                        FormInputField(mobile, { mobile = it }, "Mobile Number *", keyboardType = KeyboardType.Phone, leadingIcon = Icons.Default.Phone)
+                        FormInputField(ownerName, { ownerName = it; validationErr = null }, "Owner Full Name *", leadingIcon = Icons.Default.Person)
+                        Spacer(Modifier.height(8.dp))
+                        FormInputField(mobile, { mobile = it; validationErr = null }, "Mobile Number *", keyboardType = KeyboardType.Phone, leadingIcon = Icons.Default.Phone)
                         Spacer(Modifier.height(8.dp))
                         FormInputField(address, { address = it }, "Shop Address", singleLine = false, leadingIcon = Icons.Default.LocationOn)
                         Spacer(Modifier.height(8.dp))
                         FormInputField(gst, { gst = it }, "GST Number (Optional)", leadingIcon = Icons.Default.Receipt)
                         Spacer(Modifier.height(8.dp))
-                        FormInputField(password, { password = it }, "Shop Login Password (Optional)", isPassword = true, leadingIcon = Icons.Default.Lock)
+                        FormInputField(password, { password = it; validationErr = null }, "Shop Login Password (min 6 chars) *", isPassword = true, leadingIcon = Icons.Default.Lock)
                         Spacer(Modifier.height(8.dp))
-                        FormInputField(secretCode, { secretCode = it }, "Attendance Secret Code (e.g. 1234) *", keyboardType = KeyboardType.NumberPassword, isPassword = true, leadingIcon = Icons.Default.Pin)
+                        FormInputField(secretCode, { secretCode = it; validationErr = null }, "Attendance Secret Code (e.g. 1234) *", keyboardType = KeyboardType.NumberPassword, isPassword = true, leadingIcon = Icons.Default.Pin)
 
                         if (validationErr != null) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(validationErr!!, color = DangerRed, style = MaterialTheme.typography.bodySmall)
+                            Spacer(Modifier.height(10.dp))
+                            Surface(color = DangerRedSoft, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                Text(validationErr!!, color = DangerRed, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(10.dp))
+                            }
                         }
                         Spacer(Modifier.height(14.dp))
                         Button(
                             onClick = {
-                                when {
-                                    shopName.isBlank() -> validationErr = "Shop Name is required"
-                                    ownerName.isBlank() -> validationErr = "Owner Name is required"
-                                    mobile.trim().length < 6 -> validationErr = "Valid mobile number required"
-                                    secretCode.isBlank() -> validationErr = "Secret code for attendance lock is required"
-                                    else -> {
-                                        validationErr = null
-                                        val device = "${Build.MANUFACTURER} ${Build.MODEL}"
-                                        onCreateShop(shopName, ownerName, mobile, address, gst, password, secretCode, device)
+                                val err =
+                                    (if (customShopCode.isNotBlank()) ValidationUtils.validateShopOrAdminId(customShopCode) else null)
+                                        ?: ValidationUtils.validateShopName(shopName)
+                                        ?: ValidationUtils.validatePersonName(ownerName)
+                                        ?: ValidationUtils.validateMobile(mobile)
+                                        ?: ValidationUtils.validatePassword(password)
+                                        ?: ValidationUtils.validateSecretCode(secretCode)
+                                if (err != null) {
+                                    validationErr = err
+                                    return@Button
+                                }
+                                validationErr = null
+                                isCreatingShop = true
+                                val device = "${Build.MANUFACTURER} ${Build.MODEL}"
+                                onCreateShop(shopName, ownerName, mobile, address, gst, password, secretCode, device, customShopCode) { res ->
+                                    isCreatingShop = false
+                                    res.onFailure { e ->
+                                        validationErr = NetworkUtils.mapCloudError(e)
                                     }
                                 }
                             },
+                            enabled = !isCreatingShop,
                             colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(50.dp)
                                 .testTag("create_shop_button")
                         ) {
-                            Icon(Icons.Default.AddBusiness, contentDescription = null, tint = AmberGold)
-                            Spacer(Modifier.width(8.dp))
-                            Text("Create Shop & Sync Cloud", fontWeight = FontWeight.Bold)
+                            if (isCreatingShop) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), color = AmberGold, strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.AddBusiness, contentDescription = null, tint = AmberGold)
+                                Spacer(Modifier.width(8.dp))
+                                Text("Create Shop & Sync Cloud", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }

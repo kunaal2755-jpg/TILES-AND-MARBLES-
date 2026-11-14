@@ -303,16 +303,36 @@ fun FormInputField(
     isPassword: Boolean = false,
     singleLine: Boolean = true,
     leadingIcon: ImageVector? = null,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    isError: Boolean = false,
+    supportingText: String? = null
 ) {
+    var passwordVisible by remember { mutableStateOf(false) }
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
         label = { Text(label) },
         singleLine = singleLine,
         enabled = enabled,
+        isError = isError,
+        supportingText = supportingText?.let { { Text(it) } },
         leadingIcon = leadingIcon?.let { { Icon(it, contentDescription = null, tint = RoyalNavy) } },
-        visualTransformation = if (isPassword) PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        trailingIcon = if (isPassword) {
+            {
+                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                    Icon(
+                        imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                        contentDescription = if (passwordVisible) "Hide password" else "Show password",
+                        tint = SlateMuted
+                    )
+                }
+            }
+        } else null,
+        visualTransformation = if (isPassword && !passwordVisible) {
+            PasswordVisualTransformation()
+        } else {
+            androidx.compose.ui.text.input.VisualTransformation.None
+        },
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
         shape = RoundedCornerShape(12.dp),
         modifier = modifier.fillMaxWidth()

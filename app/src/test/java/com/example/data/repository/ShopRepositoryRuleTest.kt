@@ -2,12 +2,14 @@ package com.example.data.repository
 
 import com.example.base.FirestoreEmulatorTestBase
 import com.example.data.firebase.ShopRepository
+import com.example.data.firebase.SuperAdminRepository
 import com.example.data.model.TileProduct
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -32,7 +34,7 @@ class ShopRepositoryRuleTest : FirestoreEmulatorTestBase() {
                 trialDays = 14L
             )
         }
-        assertTrue(result.isSuccess)
+        assertTrue("createShopWithDefaults failed: ${result.exceptionOrNull()?.stackTraceToString()}", result.isSuccess)
         val shopId = result.getOrThrow()
 
         val sizes = withTimeout(FLOW_TIMEOUT_MS) {
@@ -120,6 +122,102 @@ class ShopRepositoryRuleTest : FirestoreEmulatorTestBase() {
             thrown = t
         }
         assertTrue(thrown is IllegalStateException || thrown?.unwrapFirestoreException()?.code == FirebaseFirestoreException.Code.PERMISSION_DENIED)
+    }
+
+    @Test
+    fun firstTimeMasterSetup_createsMasterAdminAndShopkeeperSyncsAcrossDevices() = runBlocking {
+        val adminRepo = SuperAdminRepository(firestore)
+
+        // 1. Before any account exists, even an unauthenticated launch sees masterAdminInitialized == false
+        auth.signOut()
+        val preAuthInitial = withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.fetchPreAuthBootstrapStatus().getOrThrow()
+        }
+        assertFalse(preAuthInitial.masterAdminInitialized)
+
+        // 2. User authenticates via Google Sign-In and submits the First-Time Master Admin setup
+        signInTestUser(ALICE_EMAIL)
+        val initialStatus = withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.fetchBootstrapStatusFromServer().getOrThrow()
+        }
+        assertFalse(initialStatus.masterAdminInitialized)
+
+        val masterShopId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.completeFirstTimeMasterAdminSetup(
+                adminIdRaw = "MASTER01",
+                shopName = "Royal Marble Master",
+                ownerName = "Alice Master",
+                mobile = "9876543210",
+                passwordPlain = "Master@123",
+                confirmPasswordPlain = "Master@123",
+                secretCodePlain = "4321",
+                deviceName = "MasterPhone"
+            ).getOrThrow()
+        }
+        assertTrue(masterShopId.isNotBlank())
+
+        // 3. After Master Admin setup completes & app signs out to Login Screen,
+        //    unauthenticated launch now sees masterAdminInitialized == true
+        auth.signOut()
+        val preAuthAfter = withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.fetchPreAuthBootstrapStatus().getOrThrow()
+        }
+        assertTrue(preAuthAfter.masterAdminInitialized)
+        assertEquals("9876543210", preAuthAfter.supportPhone)
+
+        // 4. Master Admin logs in via Login Screen with Admin ID + Password
+        signInTestUser(ALICE_EMAIL)
+        val masterLoginRepo = ShopRepository(firestore)
+        val verifiedMasterShopId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            masterLoginRepo.verifyAndSyncShopByCredentials("MASTER01", "Master@123", "MasterPhone2").getOrThrow()
+        }
+        assertEquals(masterShopId, verifiedMasterShopId)
+
+        val afterStatus = withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.fetchBootstrapStatusFromServer().getOrThrow()
+        }
+        assertTrue(afterStatus.masterAdminInitialized)
+        assertTrue(afterStatus.isMasterAdmin)
+        assertEquals("MASTER01", afterStatus.masterAdminId)
+
+        // 5. Master Admin creates a separate Shopkeeper account
+        val shopkeeperShopId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            adminRepo.createShopByAdmin(
+                shopCodeRaw = "SHOP-BOB",
+                shopName = "Bob Granite Studio",
+                ownerName = "Bob",
+                ownerUid = "",
+                mobile = "9123456789",
+                email = BOB_EMAIL,
+                passwordPlain = "BobPass@1",
+                plan = "monthly",
+                durationDays = 30L,
+                amountPaid = 999.0
+            ).getOrThrow()
+        }
+
+        // 6. Bob signs in on a fresh device and verifies with Shop ID + Password
+        signInTestUser(BOB_EMAIL)
+        val bobRepo = ShopRepository(firestore)
+        val wrongPass = withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.verifyAndSyncShopByCredentials("SHOP-BOB", "WrongPass", "BobPhone1")
+        }
+        assertTrue(wrongPass.isFailure)
+
+        val syncedId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            bobRepo.verifyAndSyncShopByCredentials("SHOP-BOB", "BobPass@1", "BobPhone1").getOrThrow()
+        }
+        assertEquals(shopkeeperShopId, syncedId)
+
+        // 7. Verify Bob's shop is isolated and seeded cleanly
+        val bobShops = withTimeout(FLOW_TIMEOUT_MS) {
+            bobRepo.observeOwnedShops().first { list -> list.any { it.id == shopkeeperShopId } }
+        }
+        assertTrue(bobShops.none { it.id == masterShopId })
+        val bobSizes = withTimeout(FLOW_TIMEOUT_MS) {
+            bobRepo.observeTileSizes(shopkeeperShopId).first { it.isNotEmpty() }
+        }
+        assertTrue(bobSizes.any { it.name == "2x4" })
     }
 
     private companion object {

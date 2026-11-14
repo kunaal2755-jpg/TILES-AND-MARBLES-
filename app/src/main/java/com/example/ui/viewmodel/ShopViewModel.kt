@@ -1,5 +1,6 @@
 package com.example.ui.viewmodel
 
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -16,16 +17,35 @@ sealed interface UiState<out T> {
     data class Error(val message: String) : UiState<Nothing>
 }
 
+sealed interface BootstrapUiState {
+    data object Checking : BootstrapUiState
+    data object NeedsFirstTimeMasterSetup : BootstrapUiState
+    data class Ready(
+        val isAdmin: Boolean,
+        val isMasterAdmin: Boolean,
+        val masterAdminId: String = ""
+    ) : BootstrapUiState
+    data class NetworkError(val message: String) : BootstrapUiState
+}
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class ShopViewModel(
     private val repository: ShopRepository,
     private val prefs: PreferencesRepository,
+    private val adminRepo: SuperAdminRepository,
+    private val appContext: Context,
     val currentUserId: String
 ) : ViewModel() {
 
     private val _selectedShopId = MutableStateFlow("")
     private val _actionMessage = MutableSharedFlow<String>(extraBufferCapacity = 8)
     val actionMessage: SharedFlow<String> = _actionMessage.asSharedFlow()
+
+    private val _bootstrapState = MutableStateFlow<BootstrapUiState>(BootstrapUiState.Checking)
+    val bootstrapState: StateFlow<BootstrapUiState> = _bootstrapState.asStateFlow()
+
+    private var failedLoginAttempts = 0
+    private var loginLockoutUntilMillis = 0L
 
     val language: StateFlow<AppLanguage> = prefs.languageFlow
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), AppLanguage.EN)
@@ -46,7 +66,7 @@ class ShopViewModel(
         .catch { error ->
             if (error is CancellationException && error.cause == null) throw error
             Log.w("ShopVM", "Error observing shops", error)
-            emit(UiState.Error(error.message ?: "Failed to load shops"))
+            emit(UiState.Error(NetworkUtils.mapCloudError(error)))
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), UiState.Loading)
 
@@ -96,6 +116,127 @@ class ShopViewModel(
                 }
             }
         }
+        checkBootstrapStatus()
+    }
+
+    fun checkBootstrapStatus() {
+        viewModelScope.launch {
+            _bootstrapState.value = BootstrapUiState.Checking
+            if (!NetworkUtils.isOnline(appContext)) {
+                _bootstrapState.value = BootstrapUiState.NetworkError(
+                    "Internet connection is unavailable. Please connect to Wi-Fi or Mobile Data and retry.\nइंटरनेट उपलब्ध नहीं है। कृपया नेटवर्क जांचें और पुनः प्रयास करें।"
+                )
+                return@launch
+            }
+            adminRepo.fetchBootstrapStatusFromServer()
+                .onSuccess { status ->
+                    if (!status.masterAdminInitialized) {
+                        _bootstrapState.value = BootstrapUiState.NeedsFirstTimeMasterSetup
+                    } else {
+                        if (status.isCurrentUserAdmin) {
+                            adminRepo.ensureSuperAdminBootstrapped()
+                        }
+                        _bootstrapState.value = BootstrapUiState.Ready(
+                            isAdmin = status.isCurrentUserAdmin,
+                            isMasterAdmin = status.isMasterAdmin,
+                            masterAdminId = status.masterAdminId
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    _bootstrapState.value = BootstrapUiState.NetworkError(NetworkUtils.mapCloudError(error))
+                }
+        }
+    }
+
+    fun completeFirstTimeMasterSetup(
+        adminId: String,
+        shopName: String,
+        ownerName: String,
+        mobile: String,
+        passwordPlain: String,
+        confirmPasswordPlain: String,
+        secretCodePlain: String,
+        deviceName: String,
+        onResult: (Result<String>) -> Unit
+    ) {
+        viewModelScope.launch {
+            if (!NetworkUtils.isOnline(appContext)) {
+                onResult(
+                    Result.failure(
+                        IllegalStateException(
+                            "Internet connection is unavailable. Connect to internet before creating Master Admin.\nइंटरनेट उपलब्ध नहीं है। कृपया नेटवर्क जांचें।"
+                        )
+                    )
+                )
+                return@launch
+            }
+            val result = adminRepo.completeFirstTimeMasterAdminSetup(
+                adminIdRaw = adminId,
+                shopName = shopName,
+                ownerName = ownerName,
+                mobile = mobile,
+                passwordPlain = passwordPlain,
+                confirmPasswordPlain = confirmPasswordPlain,
+                secretCodePlain = secretCodePlain,
+                deviceName = deviceName
+            )
+            result.onSuccess { shopId ->
+                selectShop(shopId)
+                _bootstrapState.value = BootstrapUiState.Ready(
+                    isAdmin = true,
+                    isMasterAdmin = true,
+                    masterAdminId = ValidationUtils.normalizeCode(adminId)
+                )
+                notify("Master Admin & Primary Shop created successfully!")
+            }
+            onResult(result)
+        }
+    }
+
+    fun loginWithShopCredentials(
+        shopCode: String,
+        passwordPlain: String,
+        deviceName: String,
+        onResult: (Result<String>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val now = System.currentTimeMillis()
+            if (now < loginLockoutUntilMillis) {
+                val secs = ((loginLockoutUntilMillis - now) / 1000L).coerceAtLeast(1L)
+                onResult(
+                    Result.failure(
+                        IllegalStateException("Too many wrong password attempts. Try again in ${secs}s.\nकई गलत प्रयासों के कारण ${secs} सेकंड बाद प्रयास करें।")
+                    )
+                )
+                return@launch
+            }
+            if (!NetworkUtils.isOnline(appContext)) {
+                onResult(
+                    Result.failure(
+                        IllegalStateException(
+                            "Internet connection or cloud server is unavailable.\nइंटरनेट या सर्वर उपलब्ध नहीं है।"
+                        )
+                    )
+                )
+                return@launch
+            }
+            val result = repository.verifyAndSyncShopByCredentials(shopCode, passwordPlain, deviceName)
+            result.onSuccess { shopId ->
+                failedLoginAttempts = 0
+                loginLockoutUntilMillis = 0L
+                selectShop(shopId)
+                notify("Shop synced cleanly from cloud!")
+            }.onFailure { err ->
+                if (err is IllegalArgumentException) {
+                    failedLoginAttempts++
+                    if (failedLoginAttempts >= 5) {
+                        loginLockoutUntilMillis = System.currentTimeMillis() + 30_000L
+                    }
+                }
+            }
+            onResult(result)
+        }
     }
 
     fun selectShop(shopId: String) {
@@ -122,15 +263,25 @@ class ShopViewModel(
         gstNumber: String,
         passwordPlain: String,
         secretCodePlain: String,
-        deviceName: String
+        deviceName: String,
+        customShopCode: String = "",
+        onResult: (Result<String>) -> Unit = {}
     ) {
         viewModelScope.launch {
-            val cfg = platformConfig.value
-            if (!cfg.registrationEnabled) {
-                notify("New shop registration is temporarily disabled by Super Admin.")
+            if (!NetworkUtils.isOnline(appContext)) {
+                val err = IllegalStateException("Internet unavailable. Cannot sync new shop to cloud.\nइंटरनेट उपलब्ध नहीं है।")
+                notify(err.message ?: "Offline")
+                onResult(Result.failure(err))
                 return@launch
             }
-            repository.createShopWithDefaults(
+            val cfg = platformConfig.value
+            if (!cfg.registrationEnabled) {
+                val err = IllegalStateException("New shop registration is temporarily disabled by Super Admin.")
+                notify(err.message ?: "Disabled")
+                onResult(Result.failure(err))
+                return@launch
+            }
+            val result = repository.createShopWithDefaults(
                 shopName = shopName,
                 ownerName = ownerName,
                 mobile = mobile,
@@ -140,13 +291,16 @@ class ShopViewModel(
                 secretCodePlain = secretCodePlain,
                 deviceName = deviceName,
                 requiresApproval = cfg.adminApprovalRequired,
-                trialDays = cfg.freeTrialDays
-            ).onSuccess { id ->
+                trialDays = cfg.freeTrialDays,
+                customShopCode = customShopCode
+            )
+            result.onSuccess { id ->
                 selectShop(id)
                 notify(if (cfg.adminApprovalRequired) "Shop registered! Pending Admin Approval." else "Shop created & synced to cloud!")
             }.onFailure {
-                notify("Failed to create shop: ${it.localizedMessage}")
+                notify(NetworkUtils.mapCloudError(it))
             }
+            onResult(result)
         }
     }
 
@@ -154,7 +308,7 @@ class ShopViewModel(
         viewModelScope.launch {
             repository.updateShop(updated)
                 .onSuccess { notify(msg) }
-                .onFailure { notify("Update failed: ${it.localizedMessage}") }
+                .onFailure { notify("Update failed: ${NetworkUtils.mapCloudError(it)}") }
         }
     }
 

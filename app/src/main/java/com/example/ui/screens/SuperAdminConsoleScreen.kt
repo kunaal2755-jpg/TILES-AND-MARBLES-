@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -20,7 +21,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.data.firebase.Formatters
+import com.example.data.firebase.NetworkUtils
 import com.example.data.firebase.SecurityUtils
+import com.example.data.firebase.ValidationUtils
 import com.example.data.model.*
 import com.example.ui.components.*
 import com.example.ui.theme.*
@@ -34,9 +37,9 @@ fun SuperAdminConsoleScreen(
     shopArchives: List<ShopArchive>,
     backups: List<BackupRecord>,
     adminLogs: List<AdminLog>,
-    onCreateShopAccount: (String, String, String, String, String, String, String, String, Long, Double) -> Unit,
+    onCreateShopAccount: (String, String, String, String, String, String, String, String, Long, Double, (Result<String>) -> Unit) -> Unit,
     onUpdateShopStatus: (Shop, String) -> Unit,
-    onUpdateShopCredentials: (Shop, String, String) -> Unit,
+    onUpdateShopCredentials: (Shop, String, String, (Result<Unit>) -> Unit) -> Unit,
     onUpdateSubscription: (Shop, String, Long, Double, Long) -> Unit,
     onArchiveShop: (Shop) -> Unit,
     onRestoreShop: (Shop) -> Unit,
@@ -55,11 +58,17 @@ fun SuperAdminConsoleScreen(
     var subShop by remember { mutableStateOf<Shop?>(null) }
     var accessReqShop by remember { mutableStateOf<Shop?>(null) }
 
+    val masterSubtitle = if (platformConfig.masterAdminId.isNotBlank()) {
+        "Master Admin (${platformConfig.masterAdminId}) • ${platformConfig.brandingName}"
+    } else {
+        "Master Control • ${platformConfig.brandingName}"
+    }
+
     Scaffold(
         topBar = {
             NavyTopHeader(
                 title = "Super Admin Console",
-                subtitle = "Master Control • ${platformConfig.brandingName}",
+                subtitle = masterSubtitle,
                 actions = {
                     Button(
                         onClick = onSwitchToUserApp,
@@ -285,23 +294,32 @@ fun SuperAdminConsoleScreen(
         var mobile by remember { mutableStateOf("") }
         var email by remember { mutableStateOf("") }
         var pass by remember { mutableStateOf("") }
+        var confirmPass by remember { mutableStateOf("") }
         var plan by remember { mutableStateOf("monthly") }
         var days by remember { mutableStateOf("30") }
         var paid by remember { mutableStateOf(platformConfig.planMonthlyPrice.toString()) }
+        var isSaving by remember { mutableStateOf(false) }
+        var dialogError by remember { mutableStateOf<String?>(null) }
 
         AlertDialog(
-            onDismissRequest = { showCreateShopDialog = false },
+            onDismissRequest = { if (!isSaving) showCreateShopDialog = false },
             containerColor = CardWhite,
-            title = { Text("Create Shop Account", color = RoyalNavy) },
+            title = { Text("Create Shopkeeper Account", color = RoyalNavy) },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FormInputField(code, { code = it }, "Shop User ID / Code *")
-                    FormInputField(name, { name = it }, "Shop Name *")
-                    FormInputField(owner, { owner = it }, "Owner Name *")
+                    FormInputField(
+                        value = code,
+                        onValueChange = { code = it.uppercase(); dialogError = null },
+                        label = "Shop User ID / Code *",
+                        supportingText = "Unique ID (A-Z, 0-9, -, _, min 4 chars)"
+                    )
+                    FormInputField(name, { name = it; dialogError = null }, "Shop Name *")
+                    FormInputField(owner, { owner = it; dialogError = null }, "Owner Name *")
+                    FormInputField(mobile, { mobile = it; dialogError = null }, "Mobile Number *", keyboardType = KeyboardType.Phone)
+                    FormInputField(pass, { pass = it; dialogError = null }, "Assigned Login Password (min 6 chars) *", isPassword = true)
+                    FormInputField(confirmPass, { confirmPass = it; dialogError = null }, "Confirm Password *", isPassword = true)
+                    FormInputField(email, { email = it }, "Owner Email (Optional)", keyboardType = KeyboardType.Email)
                     FormInputField(uid, { uid = it }, "Owner Firebase UID (Optional)")
-                    FormInputField(mobile, { mobile = it }, "Mobile Number *", keyboardType = KeyboardType.Phone)
-                    FormInputField(email, { email = it }, "Owner Email", keyboardType = KeyboardType.Email)
-                    FormInputField(pass, { pass = it }, "Assigned Login Password", isPassword = true)
                     Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         listOf("trial", "monthly", "quarterly", "half_yearly", "yearly", "custom").forEach { p ->
                             FilterChip(selected = plan == p, onClick = { plan = p }, label = { Text(p.uppercase()) })
@@ -311,22 +329,49 @@ fun SuperAdminConsoleScreen(
                         FormInputField(days, { days = it }, "Days", keyboardType = KeyboardType.Number, modifier = Modifier.weight(1f))
                         FormInputField(paid, { paid = it }, "Paid (₹)", keyboardType = KeyboardType.Decimal, modifier = Modifier.weight(1f))
                     }
+                    if (dialogError != null) {
+                        Surface(color = DangerRedSoft, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Text(dialogError!!, color = DangerRed, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(10.dp))
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (code.isBlank() || name.isBlank() || mobile.isBlank()) return@Button
+                        val err = ValidationUtils.validateShopOrAdminId(code)
+                            ?: ValidationUtils.validateShopName(name)
+                            ?: ValidationUtils.validatePersonName(owner)
+                            ?: ValidationUtils.validateMobile(mobile)
+                            ?: ValidationUtils.validatePassword(pass, confirmPass)
+                        if (err != null) {
+                            dialogError = err
+                            return@Button
+                        }
+                        dialogError = null
+                        isSaving = true
                         onCreateShopAccount(
                             code.trim(), name.trim(), owner.trim(), uid.trim(), mobile.trim(), email.trim(),
                             pass, plan, days.toLongOrNull() ?: 30L, paid.toDoubleOrNull() ?: 0.0
-                        )
-                        showCreateShopDialog = false
+                        ) { res ->
+                            isSaving = false
+                            res.onSuccess { showCreateShopDialog = false }
+                                .onFailure { e -> dialogError = NetworkUtils.mapCloudError(e) }
+                        }
                     },
+                    enabled = !isSaving,
                     colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
-                ) { Text("Create Shop") }
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = AmberGold, strokeWidth = 2.dp)
+                    } else {
+                        Text("Create Shop")
+                    }
+                }
             },
-            dismissButton = { TextButton(onClick = { showCreateShopDialog = false }) { Text("Cancel") } }
+            dismissButton = {
+                TextButton(onClick = { if (!isSaving) showCreateShopDialog = false }) { Text("Cancel") }
+            }
         )
     }
 
@@ -334,26 +379,53 @@ fun SuperAdminConsoleScreen(
         val target = credShop!!
         var code by remember { mutableStateOf(target.shopCode) }
         var pass by remember { mutableStateOf("") }
+        var isSaving by remember { mutableStateOf(false) }
+        var credErr by remember { mutableStateOf<String?>(null) }
         AlertDialog(
-            onDismissRequest = { credShop = null },
+            onDismissRequest = { if (!isSaving) credShop = null },
             containerColor = CardWhite,
             title = { Text("Edit Login Credentials", color = RoyalNavy) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FormInputField(code, { code = it }, "Shop User ID / Code")
-                    FormInputField(pass, { pass = it }, "New Password (blank keeps existing)", isPassword = true)
+                    FormInputField(code, { code = it.uppercase(); credErr = null }, "Shop User ID / Code *")
+                    FormInputField(pass, { pass = it; credErr = null }, "New Password (blank keeps existing)", isPassword = true)
+                    if (credErr != null) {
+                        Surface(color = DangerRedSoft, shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Text(credErr!!, color = DangerRed, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(10.dp))
+                        }
+                    }
                 }
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        onUpdateShopCredentials(target, code, pass)
-                        credShop = null
+                        val err = ValidationUtils.validateShopOrAdminId(code)
+                            ?: if (pass.isNotBlank()) ValidationUtils.validatePassword(pass) else null
+                        if (err != null) {
+                            credErr = err
+                            return@Button
+                        }
+                        credErr = null
+                        isSaving = true
+                        onUpdateShopCredentials(target, code, pass) { res ->
+                            isSaving = false
+                            res.onSuccess { credShop = null }
+                                .onFailure { e -> credErr = NetworkUtils.mapCloudError(e) }
+                        }
                     },
+                    enabled = !isSaving,
                     colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
-                ) { Text("Save") }
+                ) {
+                    if (isSaving) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), color = AmberGold, strokeWidth = 2.dp)
+                    } else {
+                        Text("Save")
+                    }
+                }
             },
-            dismissButton = { TextButton(onClick = { credShop = null }) { Text("Cancel") } }
+            dismissButton = {
+                TextButton(onClick = { if (!isSaving) credShop = null }) { Text("Cancel") }
+            }
         )
     }
 

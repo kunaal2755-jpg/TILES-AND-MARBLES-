@@ -45,7 +45,23 @@ data class AppStrings(
     val edit: String,
     val superAdminConsole: String,
     val userShopApp: String,
-    val logout: String
+    val logout: String,
+    val createSuperAdminTitle: String,
+    val createSuperAdminSubtitle: String,
+    val masterAdminBadge: String,
+    val adminIdLabel: String,
+    val shopNameLabel: String,
+    val ownerNameLabel: String,
+    val mobileNumberLabel: String,
+    val passwordLabel: String,
+    val confirmPasswordLabel: String,
+    val createMasterAdminButton: String,
+    val shopIdLoginTitle: String,
+    val shopIdLabel: String,
+    val loginAndSyncButton: String,
+    val networkErrorTitle: String,
+    val networkErrorSubtitle: String,
+    val retryButton: String
 )
 
 val EnglishStrings = AppStrings(
@@ -90,7 +106,23 @@ val EnglishStrings = AppStrings(
     edit = "Edit",
     superAdminConsole = "Super Admin Console",
     userShopApp = "Shop User App",
-    logout = "Sign Out"
+    logout = "Sign Out",
+    createSuperAdminTitle = "Create Super Admin Account",
+    createSuperAdminSubtitle = "First-Time Setup: Register the Master Admin & primary shop in Firebase. Once created, normal login will be enabled and you can create separate Shop IDs & Passwords for shopkeepers.",
+    masterAdminBadge = "FIRST-TIME MASTER ADMIN SETUP",
+    adminIdLabel = "Create Admin ID *",
+    shopNameLabel = "Shop Name *",
+    ownerNameLabel = "Owner Name *",
+    mobileNumberLabel = "Mobile Number *",
+    passwordLabel = "Create Password (min 6 chars) *",
+    confirmPasswordLabel = "Confirm Password *",
+    createMasterAdminButton = "Create Master Admin Account",
+    shopIdLoginTitle = "Login with Shop ID & Password",
+    shopIdLabel = "Shop ID / Admin ID *",
+    loginAndSyncButton = "Verify & Sync Shop Data",
+    networkErrorTitle = "Internet or Server Unavailable",
+    networkErrorSubtitle = "Unable to connect to Cloud Server. Please check your Wi-Fi or Mobile Data connection and retry.",
+    retryButton = "Retry Connection"
 )
 
 val HindiStrings = AppStrings(
@@ -135,7 +167,23 @@ val HindiStrings = AppStrings(
     edit = "संपादित करें",
     superAdminConsole = "सुपर एडमिन कंसोल",
     userShopApp = "शॉप यूज़र ऐप",
-    logout = "लॉग आउट"
+    logout = "लॉग आउट",
+    createSuperAdminTitle = "सुपर एडमिन अकाउंट बनाएं",
+    createSuperAdminSubtitle = "पहली बार सेटअप: Firebase में अपना मास्टर एडमिन अकाउंट और मुख्य दुकान रजिस्टर करें। इसके बाद सामान्य लॉगिन खुलेगा और आप अन्य दुकानदारों के लिए अलग Shop ID और पासवर्ड बना सकेंगे।",
+    masterAdminBadge = "पहली बार मास्टर एडमिन सेटअप",
+    adminIdLabel = "एडमिन ID बनाएं *",
+    shopNameLabel = "दुकान का नाम *",
+    ownerNameLabel = "मालिक का नाम *",
+    mobileNumberLabel = "मोबाइल नंबर *",
+    passwordLabel = "पासवर्ड बनाएं (कम से कम 6 अक्षर) *",
+    confirmPasswordLabel = "पासवर्ड की पुष्टि करें *",
+    createMasterAdminButton = "मास्टर एडमिन अकाउंट बनाएं",
+    shopIdLoginTitle = "Shop ID और पासवर्ड से लॉगिन करें",
+    shopIdLabel = "Shop ID / एडमिन ID *",
+    loginAndSyncButton = "सत्यापित करें और डेटा सिंक करें",
+    networkErrorTitle = "इंटरनेट या सर्वर उपलब्ध नहीं है",
+    networkErrorSubtitle = "क्लाउड सर्वर से कनेक्शन नहीं हो सका। कृपया अपना Wi-Fi या मोबाइल डेटा जांचें और पुनः प्रयास करें।",
+    retryButton = "पुनः प्रयास करें"
 )
 
 fun stringsFor(language: AppLanguage): AppStrings =

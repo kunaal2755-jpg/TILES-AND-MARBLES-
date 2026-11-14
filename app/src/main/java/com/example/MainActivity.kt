@@ -32,6 +32,7 @@ import com.example.ui.i18n.LocalAppStrings
 import com.example.ui.i18n.stringsFor
 import com.example.ui.screens.*
 import com.example.ui.theme.*
+import com.example.ui.viewmodel.BootstrapUiState
 import com.example.ui.viewmodel.ShopViewModel
 import com.example.ui.viewmodel.SuperAdminViewModel
 import com.example.ui.viewmodel.UiState
@@ -42,6 +43,7 @@ import com.google.firebase.auth.auth
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 
 class MainActivity : ComponentActivity() {
@@ -65,59 +67,207 @@ private fun authStateFlow(): Flow<FirebaseUser?> = callbackFlow {
 
 private enum class AppMode { GATE, USER_APP, SUPER_ADMIN }
 
+private sealed interface PreAuthBootstrapState {
+    data object Checking : PreAuthBootstrapState
+    data object NeedsFirstTimeMasterSetup : PreAuthBootstrapState
+    data class ReadyToLogin(
+        val supportPhone: String = "+919876543210",
+        val supportWhatsapp: String = "+919876543210"
+    ) : PreAuthBootstrapState
+    data class NetworkError(val message: String) : PreAuthBootstrapState
+}
+
 @Composable
 fun TileVaultAppRoot() {
     val context = LocalContext.current
+    val appCtx = context.applicationContext
+    val scope = rememberCoroutineScope()
+    val credentialManager = remember { CredentialManager.create(context) }
     val currentUser by authStateFlow().collectAsStateWithLifecycle(initialValue = Firebase.auth.currentUser)
     val user = currentUser
 
-    if (user == null) {
-        val publicSupportConfig = remember { mutableStateOf(PlatformConfig()) }
-        DisposableEffect(Unit) {
-            val db = com.google.firebase.firestore.FirebaseFirestore.getInstance(
-                context.getString(R.string.firestore_database_id)
-            )
-            val reg = db.collection("platform_config").document("global")
-                .addSnapshotListener { snap, _ ->
-                    if (snap != null && snap.exists()) {
-                        snap.toObject(PlatformConfig::class.java)?.let {
-                            publicSupportConfig.value = it
-                        }
+    val prefs = remember { PreferencesRepository(appCtx) }
+    val preAuthLanguage by prefs.languageFlow.collectAsStateWithLifecycle(initialValue = AppLanguage.EN)
+
+    var preAuthState by remember { mutableStateOf<PreAuthBootstrapState>(PreAuthBootstrapState.Checking) }
+    var prefillShopCode by remember { mutableStateOf("") }
+    var prefillPassword by remember { mutableStateOf("") }
+    var justRegisteredAdminCode by remember { mutableStateOf("") }
+    var registrationSuccessBanner by remember { mutableStateOf<String?>(null) }
+    var skipAutoSignInOnce by remember { mutableStateOf(false) }
+
+    val refreshPreAuthBootstrap: () -> Unit = {
+        scope.launch {
+            preAuthState = PreAuthBootstrapState.Checking
+            if (!NetworkUtils.isOnline(appCtx)) {
+                preAuthState = PreAuthBootstrapState.NetworkError(
+                    "Firebase / Internet connection is unavailable. Please check your Wi-Fi or Mobile Data and retry.\nFirebase या इंटरनेट उपलब्ध नहीं है। कृपया नेटवर्क जांचें और पुनः प्रयास करें।"
+                )
+                return@launch
+            }
+            val res = SuperAdminRepository(appCtx).fetchPreAuthBootstrapStatus()
+            preAuthState = res.fold(
+                onSuccess = { status ->
+                    if (!status.masterAdminInitialized) {
+                        PreAuthBootstrapState.NeedsFirstTimeMasterSetup
+                    } else {
+                        PreAuthBootstrapState.ReadyToLogin(
+                            supportPhone = status.supportPhone,
+                            supportWhatsapp = status.supportWhatsapp
+                        )
                     }
+                },
+                onFailure = { err ->
+                    PreAuthBootstrapState.NetworkError(NetworkUtils.mapCloudError(err))
                 }
-            onDispose { reg.remove() }
-        }
-        TileVaultTheme {
-            AuthScreen(
-                supportPhone = publicSupportConfig.value.supportPhone,
-                supportWhatsapp = publicSupportConfig.value.supportWhatsapp,
-                onAuthSuccess = {}
             )
         }
-        return
     }
 
-    val uid = user.uid
+    LaunchedEffect(Unit) {
+        refreshPreAuthBootstrap()
+    }
+
+    when (val preBoot = preAuthState) {
+        PreAuthBootstrapState.Checking -> {
+            TileVaultTheme {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = RoyalNavy)
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            text = if (preAuthLanguage == AppLanguage.HI) {
+                                "Firebase से कनेक्ट हो रहा है..."
+                            } else {
+                                "Connecting to TileVault Firebase..."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SlateMuted
+                        )
+                    }
+                }
+            }
+            return
+        }
+
+        is PreAuthBootstrapState.NetworkError -> {
+            TileVaultTheme {
+                CompositionLocalProvider(LocalAppStrings provides stringsFor(preAuthLanguage)) {
+                    NetworkErrorRetryScreen(
+                        message = preBoot.message,
+                        language = preAuthLanguage,
+                        onToggleLanguage = {
+                            scope.launch {
+                                val next = if (preAuthLanguage == AppLanguage.EN) AppLanguage.HI else AppLanguage.EN
+                                prefs.setLanguage(next)
+                            }
+                        },
+                        onRetry = refreshPreAuthBootstrap,
+                        onSignOut = if (user != null) { { signOut(credentialManager, scope) } } else null
+                    )
+                }
+            }
+            return
+        }
+
+        PreAuthBootstrapState.NeedsFirstTimeMasterSetup -> {
+            TileVaultTheme {
+                CompositionLocalProvider(LocalAppStrings provides stringsFor(preAuthLanguage)) {
+                    FirstTimeSuperAdminSetupScreen(
+                        language = preAuthLanguage,
+                        authenticatedEmail = user?.email,
+                        onToggleLanguage = {
+                            scope.launch {
+                                val next = if (preAuthLanguage == AppLanguage.EN) AppLanguage.HI else AppLanguage.EN
+                                prefs.setLanguage(next)
+                            }
+                        },
+                        onSubmit = { adminId, shopName, ownerName, mobile, pass, confirmPass, device, onResult ->
+                            scope.launch {
+                                val adminRepo = SuperAdminRepository(appCtx)
+                                val res = adminRepo.completeFirstTimeMasterAdminSetup(
+                                    adminIdRaw = adminId,
+                                    shopName = shopName,
+                                    ownerName = ownerName,
+                                    mobile = mobile,
+                                    passwordPlain = pass,
+                                    confirmPasswordPlain = confirmPass,
+                                    secretCodePlain = "1234",
+                                    deviceName = device
+                                )
+                                if (res.isSuccess) {
+                                    val normalizedId = ValidationUtils.normalizeCode(adminId)
+                                    prefillShopCode = ""
+                                    prefillPassword = ""
+                                    justRegisteredAdminCode = normalizedId
+                                    registrationSuccessBanner = if (preAuthLanguage == AppLanguage.HI) {
+                                        "मास्टर एडमिन अकाउंट '$normalizedId' Firebase में बन गया है। अब नीचे लॉगिन करें।"
+                                    } else {
+                                        "Master Admin Account '$normalizedId' registered in Firebase! Sign in below to continue."
+                                    }
+                                    skipAutoSignInOnce = true
+                                    signOut(credentialManager, scope) {
+                                        preAuthState = PreAuthBootstrapState.ReadyToLogin(
+                                            supportPhone = mobile.trim(),
+                                            supportWhatsapp = mobile.trim()
+                                        )
+                                    }
+                                }
+                                onResult(res)
+                            }
+                        },
+                        onSignOut = { signOut(credentialManager, scope) }
+                    )
+                }
+            }
+            return
+        }
+
+        is PreAuthBootstrapState.ReadyToLogin -> {
+            if (user == null) {
+                TileVaultTheme {
+                    CompositionLocalProvider(LocalAppStrings provides stringsFor(preAuthLanguage)) {
+                        AuthScreen(
+                            supportPhone = preBoot.supportPhone,
+                            supportWhatsapp = preBoot.supportWhatsapp,
+                            initialShopCode = justRegisteredAdminCode,
+                            registrationSuccessMessage = registrationSuccessBanner,
+                            skipAutoSignIn = skipAutoSignInOnce,
+                            onAuthSuccess = { code, pass ->
+                                prefillShopCode = code
+                                prefillPassword = pass
+                                registrationSuccessBanner = null
+                                skipAutoSignInOnce = false
+                            }
+                        )
+                    }
+                }
+                return
+            }
+        }
+    }
+
+    val uid = user!!.uid
     val shopViewModel: ShopViewModel = viewModel(
         key = "shop_vm_$uid",
         factory = viewModelFactory {
             initializer {
-                val repo = ShopRepository(context.applicationContext)
-                val prefs = PreferencesRepository(context.applicationContext)
-                ShopViewModel(repo, prefs, uid)
+                val repo = ShopRepository(appCtx)
+                val prefsRepo = PreferencesRepository(appCtx)
+                val adminRepo = SuperAdminRepository(appCtx)
+                ShopViewModel(repo, prefsRepo, adminRepo, appCtx, uid)
             }
         }
     )
 
-    val isSuperAdmin = remember(uid, user.email) {
-        user.email.equals(SuperAdminRepository.BOOTSTRAP_ADMIN_EMAIL, ignoreCase = true)
-    }
+    val bootstrapState by shopViewModel.bootstrapState.collectAsStateWithLifecycle()
+    val isSuperAdmin = (bootstrapState as? BootstrapUiState.Ready)?.isAdmin == true
     val adminViewModel: SuperAdminViewModel? = if (isSuperAdmin) {
         viewModel(
             key = "admin_vm_$uid",
             factory = viewModelFactory {
                 initializer {
-                    val repo = SuperAdminRepository(context.applicationContext)
+                    val repo = SuperAdminRepository(appCtx)
                     SuperAdminViewModel(repo, uid)
                 }
             }
@@ -143,16 +293,69 @@ fun TileVaultAppRoot() {
 
     TileVaultTheme(customPrimaryHex = activeShop?.primaryColorHex) {
         CompositionLocalProvider(LocalAppStrings provides stringsFor(language)) {
-            AuthenticatedWorkspace(
-                shopViewModel = shopViewModel,
-                adminViewModel = adminViewModel,
-                ownedShopsState = ownedShopsState,
-                activeShop = activeShop,
-                platformConfig = platformConfig,
-                language = language,
-                isSuperAdmin = isSuperAdmin,
-                snackbarHostState = snackbarHostState
-            )
+            Box(modifier = Modifier.fillMaxSize()) {
+                when (val boot = bootstrapState) {
+                    BootstrapUiState.Checking -> {
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.Center,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            CircularProgressIndicator(color = RoyalNavy)
+                            Spacer(Modifier.height(12.dp))
+                            Text(
+                                text = "Syncing TileVault Cloud...",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = SlateMuted
+                            )
+                        }
+                    }
+
+                    is BootstrapUiState.NetworkError -> {
+                        NetworkErrorRetryScreen(
+                            message = boot.message,
+                            language = language,
+                            onToggleLanguage = shopViewModel::toggleLanguage,
+                            onRetry = shopViewModel::checkBootstrapStatus,
+                            onSignOut = { signOut(credentialManager, scope) }
+                        )
+                    }
+
+                    BootstrapUiState.NeedsFirstTimeMasterSetup -> {
+                        LaunchedEffect(Unit) {
+                            preAuthState = PreAuthBootstrapState.NeedsFirstTimeMasterSetup
+                        }
+                    }
+
+                    is BootstrapUiState.Ready -> {
+                        AuthenticatedWorkspace(
+                            shopViewModel = shopViewModel,
+                            adminViewModel = adminViewModel,
+                            ownedShopsState = ownedShopsState,
+                            activeShop = activeShop,
+                            platformConfig = platformConfig,
+                            language = language,
+                            isSuperAdmin = boot.isAdmin,
+                            masterAdminId = boot.masterAdminId,
+                            prefillShopCode = prefillShopCode,
+                            prefillPassword = prefillPassword,
+                            onClearPrefill = { clearCode ->
+                                if (clearCode) prefillShopCode = ""
+                                prefillPassword = ""
+                            },
+                            snackbarHostState = snackbarHostState
+                        )
+                    }
+                }
+
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
+                        .padding(bottom = 76.dp)
+                )
+            }
         }
     }
 }
@@ -167,21 +370,52 @@ private fun AuthenticatedWorkspace(
     platformConfig: PlatformConfig,
     language: AppLanguage,
     isSuperAdmin: Boolean,
+    masterAdminId: String,
+    prefillShopCode: String,
+    prefillPassword: String,
+    onClearPrefill: (clearCode: Boolean) -> Unit,
     snackbarHostState: SnackbarHostState
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val credentialManager = remember { CredentialManager.create(context) }
-    val s = LocalAppStrings.current
 
     var appMode by remember { mutableStateOf(AppMode.GATE) }
     var unlockedShopIds by remember { mutableStateOf(setOf<String>()) }
     var autoEnteredOnce by remember { mutableStateOf(false) }
+    var autoVerifiedKey by remember { mutableStateOf("") }
+    var initialCredentialError by remember { mutableStateOf<String?>(null) }
 
     val shops = (ownedShopsState as? UiState.Success)?.data ?: emptyList()
 
-    LaunchedEffect(ownedShopsState, activeShop?.id) {
-        if (!autoEnteredOnce && ownedShopsState is UiState.Success && activeShop != null) {
+    LaunchedEffect(prefillShopCode, prefillPassword, isSuperAdmin, masterAdminId) {
+        val normalized = ValidationUtils.normalizeCode(prefillShopCode)
+        val key = "$normalized::$prefillPassword"
+        if (normalized.isNotBlank() && prefillPassword.isNotBlank() && autoVerifiedKey != key) {
+            autoVerifiedKey = key
+            initialCredentialError = null
+            val device = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
+            shopViewModel.loginWithShopCredentials(normalized, prefillPassword, device) { res ->
+                res.onSuccess {
+                    onClearPrefill(true)
+                    val resolvedMasterId = ValidationUtils.normalizeCode(
+                        masterAdminId.ifBlank { platformConfig.masterAdminId }
+                    )
+                    appMode = if (isSuperAdmin && normalized == resolvedMasterId) {
+                        AppMode.SUPER_ADMIN
+                    } else {
+                        AppMode.USER_APP
+                    }
+                }.onFailure { err ->
+                    initialCredentialError = NetworkUtils.mapCloudError(err)
+                    onClearPrefill(false)
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(ownedShopsState, activeShop?.id, prefillShopCode) {
+        if (!autoEnteredOnce && prefillShopCode.isBlank() && appMode == AppMode.GATE && ownedShopsState is UiState.Success && activeShop != null) {
             if (activeShop.status == "active" && activeShop.passwordHash.isBlank()) {
                 appMode = AppMode.USER_APP
                 autoEnteredOnce = true
@@ -190,6 +424,7 @@ private fun AuthenticatedWorkspace(
     }
 
     val doSignOut: () -> Unit = {
+        onClearPrefill(true)
         signOut(credentialManager, scope)
     }
 
@@ -236,38 +471,77 @@ private fun AuthenticatedWorkspace(
             }
 
             AppMode.GATE -> {
-                if (ownedShopsState is UiState.Loading) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = RoyalNavy)
+                when (ownedShopsState) {
+                    UiState.Loading -> {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(color = RoyalNavy)
+                        }
                     }
-                } else {
-                    ShopOnboardingAndGateScreen(
-                        shops = shops,
-                        platformConfig = platformConfig,
-                        isSuperAdmin = isSuperAdmin,
-                        language = language,
-                        onToggleLanguage = shopViewModel::toggleLanguage,
-                        onSelectShop = { chosen ->
-                            shopViewModel.selectShop(chosen.id)
-                            appMode = AppMode.USER_APP
-                        },
-                        onCreateShop = { name, owner, mobile, addr, gst, pass, sec, dev ->
-                            shopViewModel.createShop(name, owner, mobile, addr, gst, pass, sec, dev)
-                            appMode = AppMode.USER_APP
-                        },
-                        onVerifyPasswordAndEnter = { target, pass ->
-                            if (target.passwordHash.isBlank() || SecurityUtils.sha256(pass) == target.passwordHash) {
-                                unlockedShopIds = unlockedShopIds + target.id
-                                shopViewModel.selectShop(target.id)
+
+                    is UiState.Error -> {
+                        NetworkErrorRetryScreen(
+                            message = ownedShopsState.message,
+                            language = language,
+                            onToggleLanguage = shopViewModel::toggleLanguage,
+                            onRetry = shopViewModel::checkBootstrapStatus,
+                            onSignOut = doSignOut
+                        )
+                    }
+
+                    is UiState.Success -> {
+                        ShopOnboardingAndGateScreen(
+                            shops = shops,
+                            platformConfig = platformConfig,
+                            isSuperAdmin = isSuperAdmin,
+                            language = language,
+                            prefillShopCode = prefillShopCode,
+                            prefillPassword = prefillPassword,
+                            initialCredentialError = initialCredentialError,
+                            onToggleLanguage = shopViewModel::toggleLanguage,
+                            onSelectShop = { chosen ->
+                                shopViewModel.selectShop(chosen.id)
                                 appMode = AppMode.USER_APP
-                                true
-                            } else {
-                                false
-                            }
-                        },
-                        onOpenSuperAdmin = { appMode = AppMode.SUPER_ADMIN },
-                        onSignOut = doSignOut
-                    )
+                            },
+                            onCreateShop = { name, owner, mobile, addr, gst, pass, sec, dev, customCode, onResult ->
+                                shopViewModel.createShop(name, owner, mobile, addr, gst, pass, sec, dev, customCode) { res ->
+                                    if (res.isSuccess) {
+                                        appMode = AppMode.USER_APP
+                                    }
+                                    onResult(res)
+                                }
+                            },
+                            onLoginWithShopCredentials = { code, pass, dev, onResult ->
+                                initialCredentialError = null
+                                shopViewModel.loginWithShopCredentials(code, pass, dev) { res ->
+                                    if (res.isSuccess) {
+                                        onClearPrefill(true)
+                                        val normalized = ValidationUtils.normalizeCode(code)
+                                        val resolvedMasterId = ValidationUtils.normalizeCode(
+                                            masterAdminId.ifBlank { platformConfig.masterAdminId }
+                                        )
+                                        appMode = if (isSuperAdmin && normalized == resolvedMasterId) {
+                                            AppMode.SUPER_ADMIN
+                                        } else {
+                                            AppMode.USER_APP
+                                        }
+                                    }
+                                    onResult(res)
+                                }
+                            },
+                            onVerifyPasswordAndEnter = { target, pass ->
+                                if (target.passwordHash.isBlank() || SecurityUtils.sha256(pass) == target.passwordHash) {
+                                    unlockedShopIds = unlockedShopIds + target.id
+                                    shopViewModel.selectShop(target.id)
+                                    appMode = AppMode.USER_APP
+                                    true
+                                } else {
+                                    false
+                                }
+                            },
+                            onOpenSuperAdmin = { appMode = AppMode.SUPER_ADMIN },
+                            onSignOut = doSignOut
+                        )
+                    }
                 }
             }
 
@@ -289,14 +563,6 @@ private fun AuthenticatedWorkspace(
                 }
             }
         }
-
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .navigationBarsPadding()
-                .padding(bottom = 76.dp)
-        )
     }
 }
 

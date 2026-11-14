@@ -72,13 +72,16 @@ class SuperAdminViewModel(
         passwordPlain: String,
         plan: String,
         durationDays: Long,
-        amountPaid: Double
+        amountPaid: Double,
+        onResult: (Result<String>) -> Unit = {}
     ) {
         viewModelScope.launch {
-            repository.createShopByAdmin(
+            val res = repository.createShopByAdmin(
                 shopCode, shopName, ownerName, ownerUid, mobile, email, passwordPlain, plan, durationDays, amountPaid
-            ).onSuccess { notify("Shop $shopCode created!") }
-                .onFailure { notify("Create failed: ${it.localizedMessage}") }
+            )
+            res.onSuccess { notify("Shop ${shopCode.trim().uppercase()} created & synced!") }
+                .onFailure { notify(it.localizedMessage ?: "Create failed") }
+            onResult(res)
         }
     }
 
@@ -90,14 +93,17 @@ class SuperAdminViewModel(
         }
     }
 
-    fun updateShopCredentials(shop: Shop, newShopCode: String, newPassword: String) {
+    fun updateShopCredentials(
+        shop: Shop,
+        newShopCode: String,
+        newPassword: String,
+        onResult: (Result<Unit>) -> Unit = {}
+    ) {
         viewModelScope.launch {
-            val hash = if (newPassword.isNotBlank()) SecurityUtils.sha256(newPassword) else shop.passwordHash
-            repository.updateShopByAdmin(
-                shop.copy(shopCode = newShopCode.trim(), passwordHash = hash),
-                "Updated Login Credentials"
-            ).onSuccess { notify("Credentials updated for ${shop.shopName}") }
-                .onFailure { notify("Failed: ${it.localizedMessage}") }
+            val res = repository.updateShopCredentialsByAdmin(shop, newShopCode, newPassword)
+            res.onSuccess { notify("Credentials updated for ${shop.shopName}") }
+                .onFailure { notify(it.localizedMessage ?: "Failed to update credentials") }
+            onResult(res)
         }
     }
 

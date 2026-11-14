@@ -8,6 +8,7 @@ import com.google.firebase.auth.auth
 import com.google.firebase.firestore.DocumentSnapshot.ServerTimestampBehavior
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
 import com.google.firebase.firestore.snapshots
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -156,14 +157,25 @@ class ShopRepository(private val db: FirebaseFirestore) {
         secretCodePlain: String,
         deviceName: String,
         requiresApproval: Boolean,
-        trialDays: Long
+        trialDays: Long,
+        customShopCode: String = ""
     ): Result<String> = runCatching {
         val uid = requireUserId()
         val email = auth.currentUser?.email ?: ""
         val shopId = "shop_" + UUID.randomUUID().toString().replace("-", "").take(12)
-        val shopCode = "TV-${(1000..9999).random()}"
+        val shopCode = if (customShopCode.isNotBlank()) {
+            ValidationUtils.normalizeCode(customShopCode)
+        } else {
+            "TV-${(1000..9999).random()}"
+        }
+        val dirRef = db.collection("shop_directory").document(shopCode)
+        if (dirRef.get().await().exists()) {
+            throw IllegalArgumentException("Shop ID '$shopCode' already exists. Please pick another Shop ID.")
+        }
+
         val now = System.currentTimeMillis()
         val expiry = now + (trialDays.coerceAtLeast(1L) * 86_400_000L)
+        val passHash = SecurityUtils.sha256(passwordPlain)
 
         val shopRef = db.collection("shops").document(shopId)
         val batch = db.batch()
@@ -177,7 +189,7 @@ class ShopRepository(private val db: FirebaseFirestore) {
             email = email,
             address = address.trim(),
             gstNumber = gstNumber.trim(),
-            passwordHash = SecurityUtils.sha256(passwordPlain),
+            passwordHash = passHash,
             secretCodeHash = SecurityUtils.sha256(secretCodePlain.ifBlank { "1234" }),
             status = if (requiresApproval) "pending" else "active",
             subscriptionPlan = "trial",
@@ -186,10 +198,26 @@ class ShopRepository(private val db: FirebaseFirestore) {
             subscriptionExpiryMillis = expiry,
             graceDays = 7L,
             activeDevices = listOf(deviceName),
+            claimedByOwner = true,
             createdAt = null,
             updatedAt = null
         )
         batch.set(shopRef, shop)
+        batch.set(
+            dirRef,
+            ShopDirectoryEntry(
+                shopId = shopId,
+                shopCode = shopCode,
+                shopName = shopName.trim(),
+                ownerUid = uid,
+                linkedEmailHint = SecurityUtils.maskEmail(email),
+                mobile = mobile.trim(),
+                passwordHash = passHash,
+                isMasterAdmin = false,
+                claimedByOwner = true,
+                status = shop.status
+            )
+        )
 
         val defaultSizes = listOf(
             TileSizeConfig(ownerUid = uid, shopId = shopId, name = "12x18", piecesPerBox = 6, widthInches = 12.0, heightInches = 18.0, pdfImageWidth = 96, pdfImageHeight = 144, displayRatio = "2:3", enabled = true),
@@ -231,8 +259,115 @@ class ShopRepository(private val db: FirebaseFirestore) {
             shopId
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.CREATE, shopRef.path)
-            throw e
+            throw IllegalStateException(NetworkUtils.mapCloudError(e), e)
         }
+    }
+
+    suspend fun verifyAndSyncShopByCredentials(
+        shopCodeRaw: String,
+        passwordPlain: String,
+        deviceName: String
+    ): Result<String> = runCatching {
+        val uid = requireUserId()
+        val email = auth.currentUser?.email ?: ""
+        val code = ValidationUtils.normalizeCode(shopCodeRaw)
+        ValidationUtils.validateShopOrAdminId(code)?.let { throw IllegalArgumentException(it) }
+        if (passwordPlain.isBlank()) throw IllegalArgumentException("Password is required / पासवर्ड डालना ज़रूरी है")
+
+        val dirRef = db.collection("shop_directory").document(code)
+        val snap = try {
+            runCatching { dirRef.get(Source.SERVER).await() }.getOrElse { serverErr ->
+                if (NetworkUtils.isNetworkOrServerUnavailable(serverErr)) throw serverErr
+                dirRef.get().await()
+            }
+        } catch (e: Exception) {
+            throw IllegalStateException(NetworkUtils.mapCloudError(e), e)
+        }
+
+        if (!snap.exists()) {
+            throw IllegalArgumentException("Shop ID '$code' not found. Please check your ID or contact Master Admin.\nयह Shop ID '$code' मौजूद नहीं है।")
+        }
+        val entry = snap.toObject(ShopDirectoryEntry::class.java, ServerTimestampBehavior.ESTIMATE)
+            ?: throw IllegalStateException("Invalid shop record.")
+
+        if (entry.status in listOf("blocked", "suspended", "archived", "pending")) {
+            throw IllegalStateException("This shop account is currently ${entry.status}. Contact Master Admin.\nयह दुकान अकाउंट अभी ${entry.status} है।")
+        }
+
+        val inputHash = SecurityUtils.sha256(passwordPlain)
+        if (entry.passwordHash.isNotBlank() && inputHash != entry.passwordHash) {
+            throw IllegalArgumentException("Incorrect Password for Shop ID '$code'.\nShop ID '$code' का पासवर्ड गलत है।")
+        }
+
+        val shopRef = db.collection("shops").document(entry.shopId)
+
+        if (!entry.claimedByOwner) {
+            // First login by the assigned shopkeeper -> bind this Google UID & seed default sizes/locations
+            val claimBatch = db.batch()
+            claimBatch.update(
+                shopRef,
+                mapOf(
+                    "ownerUid" to uid,
+                    "claimedByOwner" to true,
+                    "lastClaimProof" to inputHash,
+                    "activeDevices" to listOf(deviceName),
+                    "email" to email,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            claimBatch.update(
+                dirRef,
+                mapOf(
+                    "ownerUid" to uid,
+                    "linkedEmailHint" to SecurityUtils.maskEmail(email),
+                    "claimedByOwner" to true,
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            )
+            claimBatch.commit().await()
+
+            // Seed default tile sizes and locations for the newly claimed shop
+            val seedBatch = db.batch()
+            val defaultSizes = listOf(
+                TileSizeConfig(ownerUid = uid, shopId = entry.shopId, name = "12x18", piecesPerBox = 6, widthInches = 12.0, heightInches = 18.0, pdfImageWidth = 96, pdfImageHeight = 144, displayRatio = "2:3", enabled = true),
+                TileSizeConfig(ownerUid = uid, shopId = entry.shopId, name = "2x4", piecesPerBox = 2, widthInches = 24.0, heightInches = 48.0, pdfImageWidth = 90, pdfImageHeight = 180, displayRatio = "1:2", enabled = true),
+                TileSizeConfig(ownerUid = uid, shopId = entry.shopId, name = "2x2", piecesPerBox = 4, widthInches = 24.0, heightInches = 24.0, pdfImageWidth = 120, pdfImageHeight = 120, displayRatio = "1:1", enabled = true),
+                TileSizeConfig(ownerUid = uid, shopId = entry.shopId, name = "16x16", piecesPerBox = 5, widthInches = 16.0, heightInches = 16.0, pdfImageWidth = 110, pdfImageHeight = 110, displayRatio = "1:1", enabled = true),
+                TileSizeConfig(ownerUid = uid, shopId = entry.shopId, name = "8x12", piecesPerBox = 12, widthInches = 8.0, heightInches = 12.0, pdfImageWidth = 88, pdfImageHeight = 132, displayRatio = "2:3", enabled = true)
+            )
+            defaultSizes.forEachIndexed { idx, sz ->
+                seedBatch.set(shopRef.collection("tile_sizes").document("sz_${idx + 1}"), sz)
+            }
+            val defaultLocations = listOf(
+                StockLocation(ownerUid = uid, shopId = entry.shopId, name = "Main Shop", isPrimary = true),
+                StockLocation(ownerUid = uid, shopId = entry.shopId, name = "Warehouse 1", address = "Godown A", isPrimary = false),
+                StockLocation(ownerUid = uid, shopId = entry.shopId, name = "Warehouse 2", address = "Godown B", isPrimary = false)
+            )
+            defaultLocations.forEachIndexed { idx, loc ->
+                seedBatch.set(shopRef.collection("locations").document("loc_${idx + 1}"), loc)
+            }
+            seedBatch.commit().await()
+            return@runCatching entry.shopId
+        }
+
+        if (entry.ownerUid != uid) {
+            val hint = entry.linkedEmailHint.ifBlank { "registered owner account" }
+            throw IllegalStateException(
+                "Shop ID '$code' is synced with Google account ($hint). Sign in with that Google account on this device to sync all cloud records."
+            )
+        }
+
+        // Same Google owner signing in on another mobile phone -> register device & return shopId
+        val shopSnap = shopRef.get().await().toObject(Shop::class.java, ServerTimestampBehavior.ESTIMATE)
+        if (shopSnap != null && deviceName !in shopSnap.activeDevices) {
+            shopRef.update(
+                mapOf(
+                    "activeDevices" to (shopSnap.activeDevices + deviceName).distinct().takeLast(20),
+                    "updatedAt" to FieldValue.serverTimestamp()
+                )
+            ).await()
+        }
+        entry.shopId
     }
 
     suspend fun updateShop(shop: Shop): Result<Unit> = runCatching {
@@ -240,11 +375,29 @@ class ShopRepository(private val db: FirebaseFirestore) {
         require(shop.id.isNotBlank())
         requireNotNull(shop.createdAt)
         val ref = db.collection("shops").document(shop.id)
+        val batch = db.batch()
+        batch.set(ref, shop.copy(updatedAt = null))
+        val code = ValidationUtils.normalizeCode(shop.shopCode)
+        if (code.isNotBlank()) {
+            val dirRef = db.collection("shop_directory").document(code)
+            val dirSnap = dirRef.get().await()
+            if (dirSnap.exists()) {
+                batch.update(
+                    dirRef,
+                    mapOf(
+                        "shopName" to shop.shopName,
+                        "mobile" to shop.mobile,
+                        "passwordHash" to shop.passwordHash,
+                        "updatedAt" to FieldValue.serverTimestamp()
+                    )
+                )
+            }
+        }
         try {
-            ref.set(shop.copy(updatedAt = null)).await()
+            batch.commit().await()
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, ref.path)
-            throw e
+            throw IllegalStateException(NetworkUtils.mapCloudError(e), e)
         }
     }
 

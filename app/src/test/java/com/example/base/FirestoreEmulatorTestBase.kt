@@ -60,6 +60,20 @@ abstract class FirestoreEmulatorTestBase {
 
         firestore = FirebaseFirestore.getInstance(app, databaseId)
         auth = FirebaseAuth.getInstance(app)
+        clearEmulatorFirestore()
+    }
+
+    private fun clearEmulatorFirestore() {
+        runCatching {
+            val url = java.net.URL("http://$EMULATOR_HOST:$FIRESTORE_PORT/emulator/v1/projects/$PROJECT_ID/databases/$databaseId/documents")
+            val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                requestMethod = "DELETE"
+                connectTimeout = 2000
+                readTimeout = 2000
+            }
+            conn.responseCode
+            conn.disconnect()
+        }
     }
 
     @After
@@ -74,7 +88,10 @@ abstract class FirestoreEmulatorTestBase {
             } catch (unused: FirebaseAuthInvalidUserException) {
                 auth.createUserWithEmailAndPassword(email, DEFAULT_PASSWORD).await()
             }
-            checkNotNull(result.user?.uid) { "User auth failed" }
+            val user = checkNotNull(result.user) { "User auth failed" }
+            user.getIdToken(true).await()
+            kotlinx.coroutines.delay(200)
+            user.uid
         }
     }
 

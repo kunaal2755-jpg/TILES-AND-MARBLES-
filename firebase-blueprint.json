@@ -8,6 +8,11 @@
         "uid": { "type": "string", "description": "Firebase Auth UID of the admin" },
         "email": { "type": "string", "description": "Verified email address" },
         "name": { "type": "string", "description": "Display name" },
+        "adminId": { "type": "string", "description": "Master Admin chosen login ID" },
+        "shopName": { "type": "string", "description": "Primary shop name" },
+        "mobile": { "type": "string", "description": "Master Admin mobile number" },
+        "passwordHash": { "type": "string", "description": "SHA-256 hash of Master Admin password" },
+        "isMasterAdmin": { "type": "boolean", "description": "True for the first Master Admin account" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server creation timestamp" }
       },
       "required": ["uid", "email", "name", "createdAt"]
@@ -44,6 +49,11 @@
         "planYearlyPrice": { "type": "number" },
         "customPlanPrice": { "type": "number" },
         "freeTrialDays": { "type": "integer" },
+        "masterAdminInitialized": { "type": "boolean" },
+        "masterAdminUid": { "type": "string" },
+        "masterAdminId": { "type": "string" },
+        "masterAdminShopId": { "type": "string" },
+        "masterAdminMobile": { "type": "string" },
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["brandingName", "supportPhone", "updatedAt"]
@@ -96,6 +106,8 @@
         "autoAttendanceEnabled": { "type": "boolean" },
         "autoAttendanceTime": { "type": "string" },
         "activeDevices": { "type": "array" },
+        "claimedByOwner": { "type": "boolean" },
+        "lastClaimProof": { "type": "string" },
         "dataAccessGranted": { "type": "boolean" },
         "dataAccessReason": { "type": "string" },
         "dataAccessAdminEmail": { "type": "string" },
@@ -104,6 +116,26 @@
         "updatedAt": { "type": "string", "format": "date-time" }
       },
       "required": ["ownerUid", "shopCode", "shopName", "ownerName", "mobile", "status", "createdAt", "updatedAt"]
+    },
+    "ShopDirectoryEntry": {
+      "title": "ShopDirectoryEntry",
+      "description": "Shop ID lookup entry for multi-device Shop ID & Password cloud login",
+      "type": "object",
+      "properties": {
+        "shopId": { "type": "string" },
+        "shopCode": { "type": "string" },
+        "shopName": { "type": "string" },
+        "ownerUid": { "type": "string" },
+        "linkedEmailHint": { "type": "string" },
+        "mobile": { "type": "string" },
+        "passwordHash": { "type": "string" },
+        "isMasterAdmin": { "type": "boolean" },
+        "claimedByOwner": { "type": "boolean" },
+        "status": { "type": "string", "enum": ["active", "pending", "blocked", "suspended", "archived"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["shopId", "shopCode", "shopName", "ownerUid", "passwordHash", "status", "createdAt", "updatedAt"]
     },
     "TileSizeConfig": {
       "title": "TileSizeConfig",
@@ -529,12 +561,26 @@
         "createdAt": { "type": "string", "format": "date-time" }
       },
       "required": ["actorEmail", "action", "createdAt"]
+    },
+    "AppBootstrapStatus": {
+      "title": "AppBootstrapStatus",
+      "description": "Minimal non-sensitive public flag indicating whether Master Admin has been initialized and public helpline numbers",
+      "type": "object",
+      "properties": {
+        "masterAdminInitialized": { "type": "boolean" },
+        "supportPhone": { "type": "string" },
+        "supportWhatsapp": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["masterAdminInitialized", "supportPhone", "supportWhatsapp", "updatedAt"]
     }
   },
   "firestore": {
+    "/app_bootstrap/{statusId}": { "schema": { "$ref": "#/entities/AppBootstrapStatus" }, "description": "Singleton bootstrap status doc (status)" },
     "/admins/{adminUid}": { "schema": { "$ref": "#/entities/AdminUser" }, "description": "Super Admin identities" },
     "/platform_config/{configId}": { "schema": { "$ref": "#/entities/PlatformConfig" }, "description": "Global platform configuration" },
     "/admin_secrets/{secretId}": { "schema": { "$ref": "#/entities/AdminSecrets" }, "description": "Super Admin private settings" },
+    "/shop_directory/{shopCode}": { "schema": { "$ref": "#/entities/ShopDirectoryEntry" }, "description": "Multi-device Shop ID credential lookup directory" },
     "/shops/{shopId}": { "schema": { "$ref": "#/entities/Shop" }, "description": "Multi-tenant shop accounts" },
     "/shops/{shopId}/tile_sizes/{sizeId}": { "schema": { "$ref": "#/entities/TileSizeConfig" }, "description": "Shop tile size settings" },
     "/shops/{shopId}/locations/{locationId}": { "schema": { "$ref": "#/entities/StockLocation" }, "description": "Shop storage locations" },
