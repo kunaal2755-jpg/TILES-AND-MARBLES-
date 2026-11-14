@@ -23,17 +23,46 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Create Debug Keystore
+      - name: Prepare Debug Keystore
         run: |
-          keytool -genkeypair -v \
-            -keystore debug.keystore \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
+          if [ -f debug.keystore.base64 ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          elif [ ! -f debug.keystore ]; then
+            keytool -genkeypair -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Verify Firebase Configuration
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          if [ ! -f app/google-services.json ] && [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            trimmed="$(printf '%s' "$GOOGLE_SERVICES_JSON" | sed 's/^[[:space:]]*//')"
+            if [[ "$trimmed" == \{* ]]; then
+              printf '%s\n' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            else
+              printf '%s' "$GOOGLE_SERVICES_JSON" | base64 -d > app/google-services.json
+            fi
+          fi
+          if [ ! -f app/google-services.json ]; then
+            echo "::error::Missing app/google-services.json. Add the real Firebase google-services.json file (for package com.aistudio.tilevault.krmxpt) to the app/ directory or configure the GOOGLE_SERVICES_JSON GitHub secret."
+            exit 1
+          fi
+          if ! grep -q '"com.aistudio.tilevault.krmxpt"' app/google-services.json; then
+            echo "::error::app/google-services.json does not contain Android package_name com.aistudio.tilevault.krmxpt."
+            exit 1
+          fi
+          if ! grep -q '"client_type": 3' app/google-services.json; then
+            echo "::error::app/google-services.json is missing an OAuth Web Client (client_type: 3) required for Google Services to generate default_web_client_id."
+            exit 1
+          fi
 
       - name: Build APK
         run: gradle assembleDebug
