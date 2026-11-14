@@ -1,0 +1,6 @@
+{
+  "name": "TileVault",
+  "description": "Multi-tenant Tiles & Marbles Shop Management System with User App & Super Admin Console",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

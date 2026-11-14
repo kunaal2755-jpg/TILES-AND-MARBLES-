@@ -1,0 +1,562 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED HELPERS ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        ('email' in request.auth.token &&
+         request.auth.token.email == "kunaal2755@gmail.com" &&
+         'email_verified' in request.auth.token &&
+         request.auth.token.email_verified == true) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(ownerUid) {
+      return isSignedIn() && request.auth.uid == ownerUid;
+    }
+
+    function isValidTs(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    function isReqString(data, field, minLen, maxLen) {
+      return (field in data) && data[field] is string && data[field].size() >= minLen && data[field].size() <= maxLen;
+    }
+
+    function isTenantBaseValid(data, shopId) {
+      return isReqString(data, 'ownerUid', 1, 128) &&
+             isReqString(data, 'shopId', 1, 128) &&
+             data.shopId == shopId &&
+             isValidTs(data.createdAt);
+    }
+
+    // --- ENTITY VALIDATION BLUEPRINTS ---
+    function isValidAdminUser(data) {
+      return isReqString(data, 'uid', 1, 128) &&
+             isReqString(data, 'email', 3, 200) &&
+             isReqString(data, 'name', 1, 120) &&
+             isValidTs(data.createdAt);
+    }
+
+    function isValidPlatformConfig(data) {
+      return isReqString(data, 'brandingName', 1, 80) &&
+             isReqString(data, 'supportPhone', 3, 30) &&
+             (!('emergencyLock' in data) || data.emergencyLock is bool) &&
+             (!('broadcastBanner' in data) || (data.broadcastBanner is string && data.broadcastBanner.size() <= 500)) &&
+             (!('registrationEnabled' in data) || data.registrationEnabled is bool) &&
+             (!('adminApprovalRequired' in data) || data.adminApprovalRequired is bool) &&
+             (!('supportWhatsapp' in data) || (data.supportWhatsapp is string && data.supportWhatsapp.size() <= 30)) &&
+             (!('supportEmail' in data) || (data.supportEmail is string && data.supportEmail.size() <= 120)) &&
+             (!('lowStockThreshold' in data) || data.lowStockThreshold is int) &&
+             (!('recycleBinDays' in data) || data.recycleBinDays is int) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidAdminSecrets(data) {
+      return (!('telegramBotToken' in data) || (data.telegramBotToken is string && data.telegramBotToken.size() <= 200)) &&
+             (!('telegramChatId' in data) || (data.telegramChatId is string && data.telegramChatId.size() <= 100)) &&
+             isReqString(data, 'masterAdminPinHash', 0, 128) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidShop(data) {
+      return isReqString(data, 'ownerUid', 1, 128) &&
+             isReqString(data, 'shopCode', 2, 40) &&
+             isReqString(data, 'shopName', 2, 120) &&
+             isReqString(data, 'ownerName', 1, 120) &&
+             isReqString(data, 'mobile', 3, 30) &&
+             data.status in ['active', 'pending', 'blocked', 'suspended', 'archived'] &&
+             (!('address' in data) || (data.address is string && data.address.size() <= 300)) &&
+             (!('gstNumber' in data) || (data.gstNumber is string && data.gstNumber.size() <= 30)) &&
+             (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() <= 128)) &&
+             (!('secretCodeHash' in data) || (data.secretCodeHash is string && data.secretCodeHash.size() <= 128)) &&
+             (!('activeDevices' in data) || (data.activeDevices is list && data.activeDevices.size() <= 20)) &&
+             isValidTs(data.createdAt) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidTileSize(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'name', 1, 40) &&
+             data.piecesPerBox is int && data.piecesPerBox >= 1 && data.piecesPerBox <= 1000 &&
+             data.enabled is bool &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidLocation(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'name', 1, 80) &&
+             (!('address' in data) || (data.address is string && data.address.size() <= 250)) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidTile(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'code', 1, 60) &&
+             isReqString(data, 'name', 1, 150) &&
+             isReqString(data, 'sizeName', 1, 40) &&
+             data.piecesPerBox is int && data.piecesPerBox >= 1 &&
+             data.isDeleted is bool &&
+             (!('description' in data) || (data.description is string && data.description.size() <= 500)) &&
+             (!('photoBase64' in data) || (data.photoBase64 is string && data.photoBase64.size() <= 250000)) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidStockMovement(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'tileId', 1, 128) &&
+             isReqString(data, 'tileName', 1, 150) &&
+             isReqString(data, 'movementType', 1, 40) &&
+             (!('reason' in data) || (data.reason is string && data.reason.size() <= 300));
+    }
+
+    function isValidSupplier(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'name', 1, 120) &&
+             isReqString(data, 'mobile', 3, 30) &&
+             (!('gstNumber' in data) || (data.gstNumber is string && data.gstNumber.size() <= 30)) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidPurchase(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'invoiceNumber', 1, 60) &&
+             isReqString(data, 'supplierId', 1, 128) &&
+             isReqString(data, 'supplierName', 1, 120) &&
+             (data.totalAmount is int || data.totalAmount is float) &&
+             (!('items' in data) || (data.items is list && data.items.size() <= 100)) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidCustomer(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'name', 1, 120) &&
+             isReqString(data, 'mobile', 3, 30) &&
+             (!('address' in data) || (data.address is string && data.address.size() <= 300)) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidSale(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'invoiceNumber', 1, 60) &&
+             isReqString(data, 'customerName', 1, 120) &&
+             (data.totalPayable is int || data.totalPayable is float) &&
+             data.orderStatus in ['PENDING', 'CONFIRMED'] &&
+             data.paymentStatus in ['PAID', 'PARTIAL', 'UNPAID'] &&
+             data.isDeleted is bool &&
+             (!('items' in data) || (data.items is list && data.items.size() <= 100)) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidDelivery(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'saleId', 1, 128) &&
+             isReqString(data, 'invoiceNumber', 1, 60) &&
+             isReqString(data, 'customerName', 1, 120) &&
+             (!('items' in data) || (data.items is list && data.items.size() <= 100));
+    }
+
+    function isValidReturnExchange(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'saleId', 1, 128) &&
+             isReqString(data, 'invoiceNumber', 1, 60) &&
+             isReqString(data, 'returnedTileName', 1, 150) &&
+             data.condition in ['GOOD', 'DAMAGED'];
+    }
+
+    function isValidStaff(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'fullName', 1, 120) &&
+             isReqString(data, 'mobile', 3, 30) &&
+             data.salaryMethod in ['DAYS_30', 'ACTUAL_DAYS', 'WORKING_DAYS', 'DAILY_WAGE'] &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidAttendance(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'dateKey', 8, 20) &&
+             isReqString(data, 'monthKey', 6, 10) &&
+             isReqString(data, 'staffId', 1, 128) &&
+             data.status in ['P', 'HALF', 'A', 'HOLIDAY'] &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidAdvance(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'staffId', 1, 128) &&
+             isReqString(data, 'staffName', 1, 120) &&
+             (data.amount is int || data.amount is float) && data.amount >= 0;
+    }
+
+    function isValidSalaryMonth(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'monthKey', 6, 10) &&
+             isReqString(data, 'staffId', 1, 128) &&
+             data.isFinalized is bool &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidExpense(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'category', 1, 60) &&
+             (data.amount is int || data.amount is float) && data.amount >= 0 &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidActivityLog(data, shopId) {
+      return isTenantBaseValid(data, shopId) &&
+             isReqString(data, 'module', 1, 60) &&
+             isReqString(data, 'action', 1, 100);
+    }
+
+    function isValidDataAccessRequest(data) {
+      return isReqString(data, 'shopId', 1, 128) &&
+             isReqString(data, 'shopName', 1, 120) &&
+             isReqString(data, 'ownerUid', 1, 128) &&
+             data.permissionStatus in ['PENDING', 'APPROVED', 'REVOKED'] &&
+             isReqString(data, 'reason', 1, 300) &&
+             isReqString(data, 'adminIdentity', 1, 120) &&
+             isValidTs(data.createdAt) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidShopArchive(data) {
+      return isReqString(data, 'shopId', 1, 128) &&
+             isReqString(data, 'shopName', 1, 120) &&
+             isReqString(data, 'ownerUid', 1, 128) &&
+             data.backupVerified is bool &&
+             isReqString(data, 'archivedBy', 1, 120) &&
+             isValidTs(data.createdAt) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidBackupRecord(data) {
+      return isReqString(data, 'shopId', 1, 128) &&
+             isReqString(data, 'shopName', 1, 120) &&
+             isReqString(data, 'ownerUid', 1, 128) &&
+             data.backupType in ['AUTO', 'MANUAL', 'FULL'] &&
+             data.status in ['VERIFIED', 'FAILED'] &&
+             isValidTs(data.createdAt) &&
+             isValidTs(data.updatedAt);
+    }
+
+    function isValidAdminLog(data) {
+      return isReqString(data, 'actorEmail', 3, 200) &&
+             isReqString(data, 'action', 1, 120) &&
+             isValidTs(data.createdAt);
+    }
+
+    // --- COLLECTION RULES ---
+
+    match /admins/{adminUid} {
+      allow get: if isSignedIn() && (request.auth.uid == adminUid || isSuperAdmin());
+      allow list: if isSuperAdmin();
+      allow create, update: if isSuperAdmin() && isValidId(adminUid) && isValidAdminUser(incoming());
+      allow delete: if isSuperAdmin() && isValidId(adminUid);
+    }
+
+    match /platform_config/{configId} {
+      allow get, list: if isSignedIn();
+      allow create, update: if isSuperAdmin() && isValidId(configId) && isValidPlatformConfig(incoming());
+      allow delete: if false;
+    }
+
+    match /admin_secrets/{secretId} {
+      allow get, list: if isSuperAdmin();
+      allow create, update: if isSuperAdmin() && isValidId(secretId) && isValidAdminSecrets(incoming());
+      allow delete: if false;
+    }
+
+    match /shops/{shopId} {
+      allow get: if isSignedIn() && isValidId(shopId) && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isSignedIn() && isValidId(shopId) && isValidShop(incoming()) &&
+                       (incoming().ownerUid == request.auth.uid || isSuperAdmin());
+      allow update: if isSignedIn() && isValidId(shopId) && isValidShop(incoming()) && (
+                       isSuperAdmin() ||
+                       (existing().ownerUid == request.auth.uid &&
+                        incoming().ownerUid == existing().ownerUid &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().diff(existing()).affectedKeys().hasOnly([
+                          'shopName', 'ownerName', 'mobile', 'email', 'address', 'gstNumber',
+                          'passwordHash', 'secretCodeHash', 'primaryColorHex',
+                          'showPricesOnPdfDefault', 'defaultPaperSize', 'autoAttendanceEnabled',
+                          'autoAttendanceTime', 'activeDevices', 'dataAccessGranted',
+                          'dataAccessReason', 'dataAccessAdminEmail', 'dataAccessExpiryMillis', 'updatedAt'
+                        ]))
+                    );
+      allow delete: if false;
+
+      // Subcollections: isolated by ownerUid & shopId, parent existence verified via existsAfter
+      match /tile_sizes/{sizeId} {
+        allow get: if isSignedIn() && isValidId(sizeId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(sizeId) && incoming().ownerUid == request.auth.uid &&
+                         isValidTileSize(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(sizeId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidTileSize(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'piecesPerBox', 'widthInches', 'heightInches', 'pdfImageWidth', 'pdfImageHeight', 'displayRatio', 'enabled', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(sizeId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /locations/{locationId} {
+        allow get: if isSignedIn() && isValidId(locationId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(locationId) && incoming().ownerUid == request.auth.uid &&
+                         isValidLocation(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(locationId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidLocation(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'address', 'isPrimary', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(locationId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /tiles/{tileId} {
+        allow get: if isSignedIn() && isValidId(tileId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(tileId) && incoming().ownerUid == request.auth.uid &&
+                         isValidTile(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(tileId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidTile(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'code', 'name', 'sizeId', 'sizeName', 'brand', 'category', 'shadeNumber', 'batchNumber',
+                           'quality', 'finish', 'piecesPerBox', 'locationBoxes', 'totalBoxes', 'loosePieces',
+                           'damagedPieces', 'samplePieces', 'reservedPieces', 'sellingPricePerBox',
+                           'sellingPricePerPiece', 'purchaseCost', 'description', 'photoBase64', 'isDeleted', 'updatedAt'
+                         ]);
+        allow delete: if false; // Soft delete enforced
+      }
+
+      match /stock_movements/{movementId} {
+        allow get: if isSignedIn() && isValidId(movementId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(movementId) && incoming().ownerUid == request.auth.uid &&
+                         isValidStockMovement(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update, delete: if false; // Append-only audit log
+      }
+
+      match /suppliers/{supplierId} {
+        allow get: if isSignedIn() && isValidId(supplierId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(supplierId) && incoming().ownerUid == request.auth.uid &&
+                         isValidSupplier(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(supplierId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidSupplier(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'mobile', 'address', 'gstNumber', 'previousBalance', 'totalPurchases', 'totalPaid', 'outstandingBalance', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(supplierId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /purchases/{purchaseId} {
+        allow get: if isSignedIn() && isValidId(purchaseId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(purchaseId) && incoming().ownerUid == request.auth.uid &&
+                         isValidPurchase(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(purchaseId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidPurchase(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['invoiceNumber', 'purchaseDateMillis', 'supplierId', 'supplierName', 'items', 'subtotal', 'loadingCharges', 'transportCharges', 'otherExpenses', 'discount', 'totalAmount', 'amountPaid', 'remainingDue', 'paymentMode', 'isReturn', 'remarks', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(purchaseId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /customers/{customerId} {
+        allow get: if isSignedIn() && isValidId(customerId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(customerId) && incoming().ownerUid == request.auth.uid &&
+                         isValidCustomer(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(customerId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidCustomer(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['name', 'mobile', 'address', 'previousBalance', 'totalPurchases', 'totalPayments', 'outstandingBalance', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(customerId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /sales/{saleId} {
+        allow get: if isSignedIn() && isValidId(saleId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(saleId) && incoming().ownerUid == request.auth.uid &&
+                         isValidSale(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(saleId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidSale(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly([
+                           'invoiceNumber', 'saleDateMillis', 'customerId', 'customerName', 'customerMobile',
+                           'deliveryAddress', 'showPricesOnPdf', 'items', 'subtotal', 'discount', 'additionalCharges',
+                           'loadingCharges', 'deliveryCharges', 'totalPayable', 'receivedAmount', 'remainingBalance',
+                           'paymentMode', 'paymentDateMillis', 'orderStatus', 'paymentStatus', 'remarks', 'isDeleted', 'updatedAt'
+                         ]);
+        allow delete: if false; // Soft delete enforced
+      }
+
+      match /deliveries/{deliveryId} {
+        allow get: if isSignedIn() && isValidId(deliveryId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(deliveryId) && incoming().ownerUid == request.auth.uid &&
+                         isValidDelivery(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update, delete: if false; // Immutable delivery challans
+      }
+
+      match /returns/{returnId} {
+        allow get: if isSignedIn() && isValidId(returnId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(returnId) && incoming().ownerUid == request.auth.uid &&
+                         isValidReturnExchange(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update, delete: if false; // Immutable return/exchange log
+      }
+
+      match /staff/{staffId} {
+        allow get: if isSignedIn() && isValidId(staffId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(staffId) && incoming().ownerUid == request.auth.uid &&
+                         isValidStaff(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(staffId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidStaff(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['fullName', 'mobile', 'designation', 'joiningDateMillis', 'salaryMethod', 'monthlySalary', 'dailyRate', 'weeklyOffDay', 'previousBalance', 'remarks', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(staffId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /attendance/{attendanceId} {
+        allow get: if isSignedIn() && isValidId(attendanceId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(attendanceId) && incoming().ownerUid == request.auth.uid &&
+                         isValidAttendance(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(attendanceId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidAttendance(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'isAutoMarked', 'lastEditedBy', 'editReason', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(attendanceId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /advances/{advanceId} {
+        allow get: if isSignedIn() && isValidId(advanceId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(advanceId) && incoming().ownerUid == request.auth.uid &&
+                         isValidAdvance(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update, delete: if false; // Financial advance ledger immutable
+      }
+
+      match /salary_months/{monthId} {
+        allow get: if isSignedIn() && isValidId(monthId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(monthId) && incoming().ownerUid == request.auth.uid &&
+                         isValidSalaryMonth(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(monthId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidSalaryMonth(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['presentDays', 'halfDays', 'absentDays', 'weeklyOffDays', 'monthlySalary', 'effectiveDailyRate', 'earnedSalary', 'previousArrears', 'advancesDeducted', 'netPayable', 'isFinalized', 'updatedAt']);
+        allow delete: if false;
+      }
+
+      match /expenses/{expenseId} {
+        allow get: if isSignedIn() && isValidId(expenseId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(expenseId) && incoming().ownerUid == request.auth.uid &&
+                         isValidExpense(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update: if isSignedIn() && isValidId(expenseId) && existing().ownerUid == request.auth.uid &&
+                         incoming().ownerUid == existing().ownerUid && incoming().createdAt == existing().createdAt &&
+                         isValidExpense(incoming(), shopId) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['dateMillis', 'category', 'amount', 'paymentMode', 'description', 'relatedInvoiceNumber', 'updatedAt']);
+        allow delete: if isSignedIn() && isValidId(expenseId) && existing().ownerUid == request.auth.uid;
+      }
+
+      match /activity_logs/{logId} {
+        allow get: if isSignedIn() && isValidId(logId) && existing().ownerUid == request.auth.uid;
+        allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+        allow create: if isSignedIn() && isValidId(logId) && incoming().ownerUid == request.auth.uid &&
+                         isValidActivityLog(incoming(), shopId) &&
+                         existsAfter(/databases/$(database)/documents/shops/$(shopId));
+        allow update, delete: if false;
+      }
+    }
+
+    match /data_access_requests/{requestId} {
+      allow get: if isSignedIn() && isValidId(requestId) && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isSuperAdmin() && isValidId(requestId) && isValidDataAccessRequest(incoming()) &&
+                       incoming().permissionStatus == 'PENDING';
+      allow update: if isSignedIn() && isValidId(requestId) && isValidDataAccessRequest(incoming()) && (
+                       (existing().ownerUid == request.auth.uid &&
+                        incoming().ownerUid == existing().ownerUid &&
+                        incoming().shopId == existing().shopId &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['permissionStatus', 'startTimeMillis', 'endTimeMillis', 'snapshotSummaryJson', 'updatedAt'])) ||
+                       (isSuperAdmin() &&
+                        incoming().ownerUid == existing().ownerUid &&
+                        incoming().shopId == existing().shopId &&
+                        incoming().createdAt == existing().createdAt &&
+                        incoming().permissionStatus == 'REVOKED' &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['permissionStatus', 'endTimeMillis', 'snapshotSummaryJson', 'updatedAt']))
+                    );
+      allow delete: if false;
+    }
+
+    match /shop_archives/{archiveId} {
+      allow get: if isSignedIn() && isValidId(archiveId) && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isSuperAdmin() && isValidId(archiveId) && isValidShopArchive(incoming());
+      allow update: if isSuperAdmin() && isValidId(archiveId) && isValidShopArchive(incoming()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['restored', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /backups/{backupId} {
+      allow get: if isSignedIn() && isValidId(backupId) && (existing().ownerUid == request.auth.uid || isSuperAdmin());
+      allow list: if isSignedIn() && (resource.data.ownerUid == request.auth.uid || isSuperAdmin());
+      allow create: if isSignedIn() && isValidId(backupId) && isValidBackupRecord(incoming()) &&
+                       (incoming().ownerUid == request.auth.uid || isSuperAdmin());
+      allow update: if isSignedIn() && isValidId(backupId) && isValidBackupRecord(incoming()) &&
+                       (existing().ownerUid == request.auth.uid || isSuperAdmin()) &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['status', 'recordCount', 'imageRefCount', 'backupJson', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /admin_logs/{logId} {
+      allow get, list: if isSuperAdmin();
+      allow create: if isSuperAdmin() && isValidId(logId) && isValidAdminLog(incoming());
+      allow update, delete: if false;
+    }
+  }
+}
