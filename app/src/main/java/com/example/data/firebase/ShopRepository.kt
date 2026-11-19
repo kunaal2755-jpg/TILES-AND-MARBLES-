@@ -19,6 +19,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.tasks.await
 import org.json.JSONArray
 import org.json.JSONObject
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 import java.util.UUID
 
 class ShopRepository(private val db: FirebaseFirestore) {
@@ -437,6 +440,181 @@ class ShopRepository(private val db: FirebaseFirestore) {
         }
     }
 
+    suspend fun renameLocation(
+        shopId: String,
+        location: StockLocation,
+        newNameRaw: String,
+        newAddressRaw: String,
+        tiles: List<TileProduct>,
+        actorName: String
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        val newName = newNameRaw.trim()
+        val newAddress = newAddressRaw.trim()
+        require(location.id.isNotBlank() && location.createdAt != null) { "Invalid warehouse record." }
+        require(newName.isNotBlank()) { "Warehouse name cannot be empty." }
+
+        val oldName = location.name
+        val batch = db.batch()
+        val locRef = db.collection("shops").document(shopId).collection("locations").document(location.id)
+        batch.set(
+            locRef,
+            location.copy(
+                ownerUid = uid,
+                shopId = shopId,
+                name = newName,
+                address = newAddress,
+                updatedAt = null
+            )
+        )
+
+        var migratedCount = 0
+        if (oldName != newName) {
+            tiles.forEach { tile ->
+                if (tile.createdAt != null && tile.locationBoxes.containsKey(oldName)) {
+                    val locMap = tile.locationBoxes.toMutableMap()
+                    val movedBoxes = locMap.remove(oldName) ?: 0L
+                    locMap[newName] = (locMap[newName] ?: 0L) + movedBoxes
+                    val tileRef = db.collection("shops").document(shopId).collection("tiles").document(tile.id)
+                    batch.set(
+                        tileRef,
+                        tile.copy(
+                            locationBoxes = locMap,
+                            totalBoxes = locMap.values.sum(),
+                            updatedAt = null
+                        )
+                    )
+                    migratedCount++
+                }
+            }
+        }
+
+        val logRef = db.collection("shops").document(shopId).collection("activity_logs").document()
+        batch.set(
+            logRef,
+            ActivityLog(
+                ownerUid = uid,
+                shopId = shopId,
+                module = "Inventory",
+                action = "Renamed Warehouse",
+                details = "'$oldName' -> '$newName' ($migratedCount tiles updated)",
+                actorName = actorName
+            )
+        )
+        try {
+            batch.commit().await()
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, locRef.path)
+            throw e
+        }
+    }
+
+    suspend fun deleteLocationWithMigration(
+        shopId: String,
+        locationToDelete: StockLocation,
+        targetLocationNameRaw: String,
+        createNewLocation: Boolean,
+        newLocationAddress: String,
+        tiles: List<TileProduct>,
+        actorName: String
+    ): Result<Int> = runCatching {
+        val uid = requireUserId()
+        require(locationToDelete.id.isNotBlank()) { "Invalid warehouse to delete." }
+        val oldName = locationToDelete.name
+        val targetName = targetLocationNameRaw.trim()
+
+        val affectedTiles = tiles.filter {
+            it.createdAt != null && ((it.locationBoxes[oldName] ?: 0L) > 0L || it.locationBoxes.containsKey(oldName))
+        }
+        val hasPositiveStock = affectedTiles.any { (it.locationBoxes[oldName] ?: 0L) > 0L }
+        if (hasPositiveStock) {
+            require(targetName.isNotBlank() && !targetName.equals(oldName, ignoreCase = true)) {
+                "Select an existing warehouse or create a new warehouse to move tiles before deleting '$oldName'."
+            }
+        }
+
+        val batch = db.batch()
+        if (createNewLocation && targetName.isNotBlank()) {
+            val newLocRef = db.collection("shops").document(shopId).collection("locations").document()
+            batch.set(
+                newLocRef,
+                StockLocation(
+                    ownerUid = uid,
+                    shopId = shopId,
+                    name = targetName,
+                    address = newLocationAddress.trim(),
+                    isPrimary = false,
+                    createdAt = null,
+                    updatedAt = null
+                )
+            )
+        }
+
+        var movedTilesCount = 0
+        affectedTiles.forEach { tile ->
+            val locMap = tile.locationBoxes.toMutableMap()
+            val movedBoxes = locMap.remove(oldName) ?: 0L
+            if (movedBoxes > 0L && targetName.isNotBlank()) {
+                locMap[targetName] = (locMap[targetName] ?: 0L) + movedBoxes
+                movedTilesCount++
+                val moveRef = db.collection("shops").document(shopId).collection("stock_movements").document()
+                batch.set(
+                    moveRef,
+                    StockMovement(
+                        ownerUid = uid,
+                        shopId = shopId,
+                        tileId = tile.id,
+                        tileName = tile.name,
+                        movementType = "TRANSFER",
+                        fromLocation = oldName,
+                        toLocation = targetName,
+                        boxesDelta = movedBoxes,
+                        piecesDelta = 0L,
+                        reason = "Warehouse '$oldName' deleted -> moved to '$targetName'",
+                        performedBy = actorName
+                    )
+                )
+            }
+            val tileRef = db.collection("shops").document(shopId).collection("tiles").document(tile.id)
+            batch.set(
+                tileRef,
+                tile.copy(
+                    locationBoxes = locMap,
+                    totalBoxes = locMap.values.sum(),
+                    updatedAt = null
+                )
+            )
+        }
+
+        val deleteRef = db.collection("shops").document(shopId).collection("locations").document(locationToDelete.id)
+        batch.delete(deleteRef)
+
+        val logRef = db.collection("shops").document(shopId).collection("activity_logs").document()
+        batch.set(
+            logRef,
+            ActivityLog(
+                ownerUid = uid,
+                shopId = shopId,
+                module = "Inventory",
+                action = "Deleted Warehouse",
+                details = if (movedTilesCount > 0) {
+                    "Deleted '$oldName' after migrating $movedTilesCount tiles to '$targetName'"
+                } else {
+                    "Deleted empty warehouse '$oldName'"
+                },
+                actorName = actorName
+            )
+        )
+
+        try {
+            batch.commit().await()
+            movedTilesCount
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.DELETE, deleteRef.path)
+            throw e
+        }
+    }
+
     suspend fun saveTileProduct(shopId: String, tile: TileProduct, actorName: String): Result<String> = runCatching {
         val uid = requireUserId()
         val col = db.collection("shops").document(shopId).collection("tiles")
@@ -768,6 +946,7 @@ class ShopRepository(private val db: FirebaseFirestore) {
     ): Result<Unit> = runCatching {
         val uid = requireUserId()
         require(customer.id.isNotBlank() && customer.createdAt != null)
+        val now = System.currentTimeMillis()
         val batch = db.batch()
         val cRef = db.collection("shops").document(shopId).collection("customers").document(customer.id)
         val newPaid = customer.totalPayments + amount
@@ -783,6 +962,27 @@ class ShopRepository(private val db: FirebaseFirestore) {
                 newRec > 0.0 -> "PARTIAL"
                 else -> "UNPAID"
             }
+            val updatedHistory = buildList {
+                if (saleToCredit.paymentHistory.isEmpty() && saleToCredit.receivedAmount > 0.0) {
+                    add(
+                        SalePaymentEntry(
+                            dateMillis = saleToCredit.paymentDateMillis,
+                            amount = saleToCredit.receivedAmount,
+                            mode = saleToCredit.paymentMode.ifBlank { "Cash" },
+                            note = "Initial payment"
+                        )
+                    )
+                }
+                addAll(saleToCredit.paymentHistory)
+                add(
+                    SalePaymentEntry(
+                        dateMillis = now,
+                        amount = amount,
+                        mode = paymentMode,
+                        note = "Customer payment"
+                    )
+                )
+            }
             batch.set(
                 sRef,
                 saleToCredit.copy(
@@ -790,7 +990,8 @@ class ShopRepository(private val db: FirebaseFirestore) {
                     remainingBalance = newRem,
                     paymentStatus = pStatus,
                     paymentMode = paymentMode,
-                    paymentDateMillis = System.currentTimeMillis(),
+                    paymentDateMillis = now,
+                    paymentHistory = updatedHistory,
                     updatedAt = null
                 )
             )
@@ -812,6 +1013,97 @@ class ShopRepository(private val db: FirebaseFirestore) {
             batch.commit().await()
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.UPDATE, cRef.path)
+            throw e
+        }
+    }
+
+    suspend fun recordSalePayment(
+        shopId: String,
+        sale: SaleOrder,
+        customer: Customer?,
+        amount: Double,
+        paymentMode: String,
+        note: String = "",
+        paymentDateMillis: Long = System.currentTimeMillis(),
+        actorName: String = "Owner"
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(sale.id.isNotBlank() && sale.createdAt != null) { "Invalid sale record." }
+        require(amount > 0.0) { "Payment amount must be greater than zero." }
+
+        val batch = db.batch()
+        val sRef = db.collection("shops").document(shopId).collection("sales").document(sale.id)
+        val newRec = sale.receivedAmount + amount
+        val newRem = (sale.totalPayable - newRec).coerceAtLeast(0.0)
+        val pStatus = when {
+            newRem <= 0.01 -> "PAID"
+            newRec > 0.0 -> "PARTIAL"
+            else -> "UNPAID"
+        }
+        val updatedHistory = buildList {
+            if (sale.paymentHistory.isEmpty() && sale.receivedAmount > 0.0) {
+                add(
+                    SalePaymentEntry(
+                        dateMillis = sale.paymentDateMillis,
+                        amount = sale.receivedAmount,
+                        mode = sale.paymentMode.ifBlank { "Cash" },
+                        note = "Initial payment"
+                    )
+                )
+            }
+            addAll(sale.paymentHistory)
+            add(
+                SalePaymentEntry(
+                    dateMillis = paymentDateMillis,
+                    amount = amount,
+                    mode = paymentMode.ifBlank { "Cash" },
+                    note = note.trim().ifBlank { "Installment received" }
+                )
+            )
+        }
+        batch.set(
+            sRef,
+            sale.copy(
+                receivedAmount = newRec,
+                remainingBalance = newRem,
+                paymentStatus = pStatus,
+                paymentMode = paymentMode,
+                paymentDateMillis = paymentDateMillis,
+                paymentHistory = updatedHistory,
+                updatedAt = null
+            )
+        )
+
+        if (customer != null && customer.id.isNotBlank() && customer.createdAt != null) {
+            val cRef = db.collection("shops").document(shopId).collection("customers").document(customer.id)
+            val newPaid = customer.totalPayments + amount
+            val newOut = customer.previousBalance + customer.totalPurchases - newPaid
+            batch.set(
+                cRef,
+                customer.copy(
+                    totalPayments = newPaid,
+                    outstandingBalance = newOut,
+                    updatedAt = null
+                )
+            )
+        }
+
+        val logRef = db.collection("shops").document(shopId).collection("activity_logs").document()
+        batch.set(
+            logRef,
+            ActivityLog(
+                ownerUid = uid,
+                shopId = shopId,
+                module = "Sales",
+                action = "Installment Payment",
+                details = "#${sale.invoiceNumber} (${sale.customerName}): ${Formatters.currency(amount)} via $paymentMode",
+                actorName = actorName
+            )
+        )
+        try {
+            batch.commit().await()
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, sRef.path)
             throw e
         }
     }
@@ -850,87 +1142,142 @@ class ShopRepository(private val db: FirebaseFirestore) {
             custToUpdate = null
         }
 
-        val finalizedSale = sale.copy(
-            ownerUid = uid,
-            shopId = shopId,
-            customerId = resolvedCustomerId,
-            createdAt = if (isNew) null else sale.createdAt,
-            updatedAt = null
-        )
-        batch.set(saleRef, finalizedSale)
+        // Build chronological payment history entries
+        val resolvedHistory: List<SalePaymentEntry> = when {
+            isNew && sale.receivedAmount > 0.0 && sale.paymentHistory.isEmpty() -> {
+                listOf(
+                    SalePaymentEntry(
+                        dateMillis = sale.paymentDateMillis,
+                        amount = sale.receivedAmount,
+                        mode = sale.paymentMode.ifBlank { "Cash" },
+                        note = "Initial payment"
+                    )
+                )
+            }
+            !isNew && sale.receivedAmount > 0.0 -> {
+                val historySum = sale.paymentHistory.sumOf { it.amount }
+                val delta = sale.receivedAmount - historySum
+                if (delta > 0.01) {
+                    sale.paymentHistory + SalePaymentEntry(
+                        dateMillis = System.currentTimeMillis(),
+                        amount = delta,
+                        mode = sale.paymentMode.ifBlank { "Cash" },
+                        note = if (sale.paymentHistory.isEmpty()) "Initial payment" else "Payment received"
+                    )
+                } else {
+                    sale.paymentHistory
+                }
+            }
+            else -> sale.paymentHistory
+        }
 
         // Deduct inventory ONLY when transitioning into CONFIRMED (never on PENDING!)
         val newlyConfirmed = sale.orderStatus == "CONFIRMED" && previousOrderStatus != "CONFIRMED"
-        if (newlyConfirmed) {
-            sale.items.filter { !it.isManualItem && it.tileId.isNotBlank() }.forEach { item ->
-                val tile = tilesMap[item.tileId]
-                if (tile != null && tile.createdAt != null) {
-                    val totalAvailablePcs = (tile.totalBoxes * tile.piecesPerBox) + tile.loosePieces
-                    val deductPcs = item.totalPieces()
-                    val remainingPcs = (totalAvailablePcs - deductPcs).coerceAtLeast(0L)
-                    val newBoxes = if (tile.piecesPerBox > 0) remainingPcs / tile.piecesPerBox else 0L
-                    val newLoose = if (tile.piecesPerBox > 0) remainingPcs % tile.piecesPerBox else 0L
+        val workingTiles = tilesMap.toMutableMap()
+        val updatedItems: List<SaleLineItem> = if (newlyConfirmed) {
+            sale.items.map { item ->
+                if (item.isManualItem || item.tileId.isBlank()) {
+                    item
+                } else {
+                    val tile = workingTiles[item.tileId]
+                    if (tile != null && tile.createdAt != null) {
+                        val totalAvailablePcs = (tile.totalBoxes * tile.piecesPerBox) + tile.loosePieces
+                        val deductPcs = item.totalPieces()
+                        val remainingPcs = (totalAvailablePcs - deductPcs).coerceAtLeast(0L)
+                        val newBoxes = if (tile.piecesPerBox > 0) remainingPcs / tile.piecesPerBox else 0L
+                        val newLoose = if (tile.piecesPerBox > 0) remainingPcs % tile.piecesPerBox else 0L
 
-                    val locMap = tile.locationBoxes.toMutableMap()
-                    if (locMap.isNotEmpty()) {
-                        val diffBoxes = (tile.totalBoxes - newBoxes).coerceAtLeast(0L)
-                        var toDeduct = diffBoxes
-                        for (key in locMap.keys.toList()) {
-                            if (toDeduct <= 0L) break
-                            val cur = locMap[key] ?: 0L
-                            val take = toDeduct.coerceAtMost(cur)
-                            locMap[key] = cur - take
-                            toDeduct -= take
+                        val locMap = tile.locationBoxes.toMutableMap()
+                        val deductedFrom = linkedMapOf<String, Long>()
+                        if (locMap.isNotEmpty()) {
+                            val diffBoxes = (tile.totalBoxes - newBoxes).coerceAtLeast(0L)
+                            var toDeduct = diffBoxes
+                            val orderedKeys = locMap.keys.sortedWith(
+                                compareBy<String> { if (it.equals("Main Shop", ignoreCase = true)) 0 else 1 }
+                                    .thenBy { it.lowercase() }
+                            )
+                            for (key in orderedKeys) {
+                                if (toDeduct <= 0L) break
+                                val cur = locMap[key] ?: 0L
+                                val take = toDeduct.coerceAtMost(cur)
+                                if (take > 0L) {
+                                    locMap[key] = cur - take
+                                    deductedFrom[key] = (deductedFrom[key] ?: 0L) + take
+                                    toDeduct -= take
+                                }
+                            }
                         }
-                    }
 
-                    val tRef = db.collection("shops").document(shopId).collection("tiles").document(tile.id)
-                    batch.set(
-                        tRef,
-                        tile.copy(
+                        val updatedTile = tile.copy(
                             locationBoxes = locMap,
                             totalBoxes = newBoxes,
                             loosePieces = newLoose,
                             updatedAt = null
                         )
-                    )
-                    val moveRef = db.collection("shops").document(shopId).collection("stock_movements").document()
-                    batch.set(
-                        moveRef,
-                        StockMovement(
-                            ownerUid = uid,
-                            shopId = shopId,
-                            tileId = tile.id,
-                            tileName = tile.name,
-                            movementType = "STOCK_OUT",
-                            fromLocation = "Main Shop",
-                            boxesDelta = item.fullBoxes,
-                            piecesDelta = item.loosePieces,
-                            reason = "Confirmed Sale #${sale.invoiceNumber}",
-                            performedBy = actorName
+                        workingTiles[tile.id] = updatedTile
+
+                        val tRef = db.collection("shops").document(shopId).collection("tiles").document(tile.id)
+                        batch.set(tRef, updatedTile)
+
+                        val moveRef = db.collection("shops").document(shopId).collection("stock_movements").document()
+                        batch.set(
+                            moveRef,
+                            StockMovement(
+                                ownerUid = uid,
+                                shopId = shopId,
+                                tileId = tile.id,
+                                tileName = tile.name,
+                                movementType = "STOCK_OUT",
+                                fromLocation = deductedFrom.keys.joinToString(", ").ifBlank {
+                                    tile.locationBoxes.keys.firstOrNull() ?: "Main Shop"
+                                },
+                                boxesDelta = item.fullBoxes,
+                                piecesDelta = item.loosePieces,
+                                reason = "Confirmed Sale #${sale.invoiceNumber}",
+                                performedBy = actorName
+                            )
                         )
-                    )
+                        item.copy(
+                            photoBase64 = item.photoBase64.ifBlank { tile.photoBase64 },
+                            deductedLocations = deductedFrom
+                        )
+                    } else {
+                        item
+                    }
                 }
             }
-
-            if (custToUpdate != null && custToUpdate.createdAt != null) {
-                val cRef = db.collection("shops").document(shopId).collection("customers").document(custToUpdate.id)
-                val newPurchases = custToUpdate.totalPurchases + sale.totalPayable
-                val newPayments = custToUpdate.totalPayments + sale.receivedAmount
-                val newOut = custToUpdate.previousBalance + newPurchases - newPayments
-                batch.set(
-                    cRef,
-                    custToUpdate.copy(
-                        totalPurchases = newPurchases,
-                        totalPayments = newPayments,
-                        outstandingBalance = newOut,
-                        updatedAt = null
-                    )
-                )
-            }
+        } else {
+            sale.items
         }
 
-        if (sale.loadingCharges > 0.0) {
+        val finalizedSale = sale.copy(
+            ownerUid = uid,
+            shopId = shopId,
+            customerId = resolvedCustomerId,
+            items = updatedItems,
+            paymentHistory = resolvedHistory,
+            createdAt = if (isNew) null else sale.createdAt,
+            updatedAt = null
+        )
+        batch.set(saleRef, finalizedSale)
+
+        if (newlyConfirmed && custToUpdate != null && custToUpdate.createdAt != null) {
+            val cRef = db.collection("shops").document(shopId).collection("customers").document(custToUpdate.id)
+            val newPurchases = custToUpdate.totalPurchases + sale.totalPayable
+            val newPayments = custToUpdate.totalPayments + sale.receivedAmount
+            val newOut = custToUpdate.previousBalance + newPurchases - newPayments
+            batch.set(
+                cRef,
+                custToUpdate.copy(
+                    totalPurchases = newPurchases,
+                    totalPayments = newPayments,
+                    outstandingBalance = newOut,
+                    updatedAt = null
+                )
+            )
+        }
+
+        if (sale.loadingCharges > 0.0 && isNew) {
             val expRef = db.collection("shops").document(shopId).collection("expenses").document()
             batch.set(
                 expRef,
@@ -952,6 +1299,127 @@ class ShopRepository(private val db: FirebaseFirestore) {
             saleRef.id
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, saleRef.path)
+            throw e
+        }
+    }
+
+    suspend fun deleteSaleOrder(
+        shopId: String,
+        sale: SaleOrder,
+        restoreStock: Boolean,
+        customer: Customer?,
+        tilesMap: Map<String, TileProduct>,
+        actorName: String
+    ): Result<Unit> = runCatching {
+        val uid = requireUserId()
+        require(sale.id.isNotBlank() && sale.createdAt != null) { "Invalid sale record to delete." }
+
+        val batch = db.batch()
+        val saleRef = db.collection("shops").document(shopId).collection("sales").document(sale.id)
+        batch.set(saleRef, sale.copy(isDeleted = true, updatedAt = null))
+
+        if (sale.orderStatus == "CONFIRMED") {
+            if (restoreStock) {
+                val workingTiles = tilesMap.toMutableMap()
+                sale.items.filter { !it.isManualItem && it.tileId.isNotBlank() }.forEach { item ->
+                    val tile = workingTiles[item.tileId]
+                    if (tile != null && tile.createdAt != null) {
+                        val addPcs = item.totalPieces()
+                        val curTotalPcs = (tile.totalBoxes * tile.piecesPerBox) + tile.loosePieces
+                        val newTotalPcs = curTotalPcs + addPcs
+                        val newBoxes = if (tile.piecesPerBox > 0) newTotalPcs / tile.piecesPerBox else tile.totalBoxes
+                        val newLoose = if (tile.piecesPerBox > 0) newTotalPcs % tile.piecesPerBox else tile.loosePieces
+
+                        val boxesToRestore = (newBoxes - tile.totalBoxes).coerceAtLeast(0L)
+                        val locMap = tile.locationBoxes.toMutableMap()
+                        var remainingBoxes = boxesToRestore
+                        val restoredTo = mutableListOf<String>()
+
+                        // Restore to the EXACT warehouse(s) from which boxes were deducted
+                        if (item.deductedLocations.isNotEmpty()) {
+                            for ((locName, deductedQty) in item.deductedLocations) {
+                                if (remainingBoxes <= 0L) break
+                                val putBack = deductedQty.coerceAtMost(remainingBoxes)
+                                if (putBack > 0L) {
+                                    locMap[locName] = (locMap[locName] ?: 0L) + putBack
+                                    remainingBoxes -= putBack
+                                    restoredTo += locName
+                                }
+                            }
+                        }
+                        if (remainingBoxes > 0L) {
+                            val fallbackLoc = item.deductedLocations.keys.firstOrNull()
+                                ?: locMap.keys.firstOrNull()
+                                ?: "Main Shop"
+                            locMap[fallbackLoc] = (locMap[fallbackLoc] ?: 0L) + remainingBoxes
+                            if (fallbackLoc !in restoredTo) restoredTo += fallbackLoc
+                        }
+
+                        val updatedTile = tile.copy(
+                            locationBoxes = locMap,
+                            totalBoxes = locMap.values.sum().coerceAtLeast(newBoxes),
+                            loosePieces = newLoose,
+                            updatedAt = null
+                        )
+                        workingTiles[tile.id] = updatedTile
+
+                        val tRef = db.collection("shops").document(shopId).collection("tiles").document(tile.id)
+                        batch.set(tRef, updatedTile)
+
+                        val moveRef = db.collection("shops").document(shopId).collection("stock_movements").document()
+                        batch.set(
+                            moveRef,
+                            StockMovement(
+                                ownerUid = uid,
+                                shopId = shopId,
+                                tileId = tile.id,
+                                tileName = tile.name,
+                                movementType = "STOCK_IN",
+                                toLocation = restoredTo.joinToString(", ").ifBlank { "Main Shop" },
+                                boxesDelta = item.fullBoxes,
+                                piecesDelta = item.loosePieces,
+                                reason = "Sale Deleted (Stock Restored) #${sale.invoiceNumber}",
+                                performedBy = actorName
+                            )
+                        )
+                    }
+                }
+            }
+
+            if (customer != null && customer.id.isNotBlank() && customer.createdAt != null) {
+                val cRef = db.collection("shops").document(shopId).collection("customers").document(customer.id)
+                val newPurchases = (customer.totalPurchases - sale.totalPayable).coerceAtLeast(0.0)
+                val newPayments = (customer.totalPayments - sale.receivedAmount).coerceAtLeast(0.0)
+                val newOut = customer.previousBalance + newPurchases - newPayments
+                batch.set(
+                    cRef,
+                    customer.copy(
+                        totalPurchases = newPurchases,
+                        totalPayments = newPayments,
+                        outstandingBalance = newOut,
+                        updatedAt = null
+                    )
+                )
+            }
+        }
+
+        val logRef = db.collection("shops").document(shopId).collection("activity_logs").document()
+        batch.set(
+            logRef,
+            ActivityLog(
+                ownerUid = uid,
+                shopId = shopId,
+                module = "Sales",
+                action = "Deleted Sale Bill",
+                details = "#${sale.invoiceNumber} (${sale.customerName}) • ${if (restoreStock) "Stock Restored" else "No Stock Restore"}",
+                actorName = actorName
+            )
+        )
+
+        try {
+            batch.commit().await()
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.UPDATE, saleRef.path)
             throw e
         }
     }
@@ -1171,6 +1639,87 @@ class ShopRepository(private val db: FirebaseFirestore) {
             batch.commit().await()
         } catch (e: Exception) {
             handleFirestoreError(e, OperationType.WRITE, ref.path)
+            throw e
+        }
+    }
+
+    suspend fun markAutoAttendanceBatch(
+        shopId: String,
+        dateKey: String,
+        unmarkedStaff: List<StaffMember>,
+        autoTime: String,
+        actorName: String
+    ): Result<Int> = runCatching {
+        val uid = requireUserId()
+        if (unmarkedStaff.isEmpty()) return@runCatching 0
+
+        val dayName = runCatching {
+            val parsed = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(dateKey)
+            val cal = Calendar.getInstance().apply { if (parsed != null) time = parsed }
+            when (cal.get(Calendar.DAY_OF_WEEK)) {
+                Calendar.SUNDAY -> "Sunday"
+                Calendar.MONDAY -> "Monday"
+                Calendar.TUESDAY -> "Tuesday"
+                Calendar.WEDNESDAY -> "Wednesday"
+                Calendar.THURSDAY -> "Thursday"
+                Calendar.FRIDAY -> "Friday"
+                Calendar.SATURDAY -> "Saturday"
+                else -> ""
+            }
+        }.getOrDefault("")
+
+        val monthKey = dateKey.take(7)
+        val batch = db.batch()
+        var markedCount = 0
+
+        unmarkedStaff.forEach { member ->
+            if (member.id.isNotBlank()) {
+                val docId = "${dateKey}_${member.id}"
+                val ref = db.collection("shops").document(shopId).collection("attendance").document(docId)
+                val existingSnap = ref.get().await()
+                if (!existingSnap.exists()) {
+                    val isWeeklyOff = dayName.isNotBlank() && member.weeklyOffDay.equals(dayName, ignoreCase = true)
+                    val status = if (isWeeklyOff) "HOLIDAY" else "P"
+                    batch.set(
+                        ref,
+                        AttendanceRecord(
+                            ownerUid = uid,
+                            shopId = shopId,
+                            dateKey = dateKey,
+                            monthKey = monthKey,
+                            staffId = member.id,
+                            staffName = member.fullName,
+                            status = status,
+                            isAutoMarked = true,
+                            lastEditedBy = actorName,
+                            editReason = if (isWeeklyOff) "Auto-attendance Weekly Off ($autoTime)" else "Auto-attendance ($autoTime)"
+                        )
+                    )
+                    markedCount++
+                }
+            }
+        }
+
+        if (markedCount == 0) return@runCatching 0
+
+        val logRef = db.collection("shops").document(shopId).collection("activity_logs").document()
+        batch.set(
+            logRef,
+            ActivityLog(
+                ownerUid = uid,
+                shopId = shopId,
+                module = "Attendance",
+                action = "Auto-Marked Attendance",
+                details = "Auto-marked $markedCount staff on $dateKey ($autoTime)",
+                actorName = actorName
+            )
+        )
+
+        try {
+            batch.commit().await()
+            markedCount
+        } catch (e: Exception) {
+            handleFirestoreError(e, OperationType.CREATE, "shops/$shopId/attendance")
             throw e
         }
     }

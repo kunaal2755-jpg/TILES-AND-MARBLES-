@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
@@ -80,6 +81,82 @@ fun DashboardScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Luxury Studio Hero Banner
+        item {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(22.dp))
+                    .background(
+                        Brush.linearGradient(
+                            colors = listOf(DeepTealDark, RoyalNavy, SecondaryNavy)
+                        )
+                    )
+                    .padding(18.dp)
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = shop.shopName,
+                                style = MaterialTheme.typography.headlineSmall,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "${shop.shopCode} • ${shop.ownerName.ifBlank { "Studio Owner" }}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = Color.White.copy(alpha = 0.78f)
+                            )
+                        }
+                        Surface(
+                            onClick = onOpenSettings,
+                            color = Color.White.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(12.dp),
+                            border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Tune, contentDescription = "Shop Settings", tint = AmberGold, modifier = Modifier.size(16.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Studio", style = MaterialTheme.typography.labelMedium, color = Color.White)
+                            }
+                        }
+                    }
+                    HorizontalDivider(color = Color.White.copy(alpha = 0.14f))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(s.todaysSales, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.72f))
+                            Text(
+                                Formatters.currency(todaySalesSum),
+                                style = MaterialTheme.typography.titleLarge,
+                                color = AmberGold,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(s.monthlySales, style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.72f))
+                            Text(
+                                Formatters.currency(monthSalesSum),
+                                style = MaterialTheme.typography.titleLarge,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         if (platformConfig.broadcastBanner.isNotBlank()) {
             item {
                 Surface(

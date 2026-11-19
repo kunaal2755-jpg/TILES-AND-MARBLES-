@@ -2,6 +2,7 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -39,6 +40,7 @@ fun StaffAndSalaryScreen(
     activityLogs: List<ActivityLog>,
     onSaveStaff: (StaffMember) -> Unit,
     onMarkAttendance: (String, StaffMember, String, String?, Boolean, String) -> Unit,
+    onRunAutoAttendance: (String) -> Unit,
     onClearAttendanceForDate: (String, String) -> Unit,
     onUpdateShop: (Shop, String) -> Unit,
     onSaveAdvance: (StaffAdvance) -> Unit,
@@ -60,6 +62,7 @@ fun StaffAndSalaryScreen(
     var editingStaff by remember { mutableStateOf<StaffMember?>(null) }
     var showAdvanceDialog by remember { mutableStateOf(false) }
     var showAuditLogDialog by remember { mutableStateOf(false) }
+    var showAutoTimeDialog by remember { mutableStateOf(false) }
 
     // Secret code prompt state
     var pendingAttendanceAction by remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -67,6 +70,9 @@ fun StaffAndSalaryScreen(
     var secretActionNeedsCallbackWithCode by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
     var generatedPdf by remember { mutableStateOf<File?>(null) }
+    var pdfTargetPhone by remember { mutableStateOf<String?>(null) }
+    var pdfTargetName by remember { mutableStateOf<String?>(null) }
+    var pdfCaption by remember { mutableStateOf<String?>(null) }
 
     Box(modifier = Modifier.fillMaxSize().background(LightBackground)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -141,8 +147,15 @@ fun StaffAndSalaryScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Column(modifier = Modifier.weight(1f)) {
-                                        Text("Auto-Attendance (${shop.autoAttendanceTime})", style = MaterialTheme.typography.titleSmall, color = RoyalNavy)
-                                        Text("Auto-marks unmarked active staff as Present", style = MaterialTheme.typography.bodySmall, color = SlateMuted)
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                            Text("Auto-Attendance (${shop.autoAttendanceTime})", style = MaterialTheme.typography.titleSmall, color = RoyalNavy)
+                                            StatusBadge(
+                                                if (shop.autoAttendanceEnabled) "AUTO ON" else "OFF",
+                                                if (shop.autoAttendanceEnabled) SuccessGreenSoft else BorderLight,
+                                                if (shop.autoAttendanceEnabled) SuccessGreen else SlateMuted
+                                            )
+                                        }
+                                        Text("Auto-marks Present (or Holiday on weekly off) at/after ${shop.autoAttendanceTime}", style = MaterialTheme.typography.bodySmall, color = SlateMuted)
                                     }
                                     Switch(
                                         checked = shop.autoAttendanceEnabled,
@@ -151,21 +164,39 @@ fun StaffAndSalaryScreen(
                                         }
                                     )
                                 }
-                                if (shop.autoAttendanceEnabled && staff.isNotEmpty()) {
+                                if (shop.autoAttendanceEnabled) {
                                     Spacer(Modifier.height(6.dp))
+                                    Row(
+                                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        listOf("09:00", "09:30", "10:00", "10:30").forEach { t ->
+                                            FilterChip(
+                                                selected = shop.autoAttendanceTime == t,
+                                                onClick = { onUpdateShop(shop.copy(autoAttendanceTime = t), "Auto-Attendance time: $t") },
+                                                label = { Text(t) }
+                                            )
+                                        }
+                                        OutlinedButton(
+                                            onClick = { showAutoTimeDialog = true },
+                                            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                        ) { Text("Set Time") }
+                                    }
+                                }
+                                if (shop.autoAttendanceEnabled && staff.isNotEmpty()) {
+                                    Spacer(Modifier.height(8.dp))
+                                    val unmarkedCount = staff.count { !recordsForDate.containsKey(it.id) }
                                     OutlinedButton(
-                                        onClick = {
-                                            staff.forEach { member ->
-                                                if (!recordsForDate.containsKey(member.id)) {
-                                                    onMarkAttendance(selectedDateKey, member, "P", null, true, "Auto-attendance ${shop.autoAttendanceTime}")
-                                                }
-                                            }
-                                        },
-                                        modifier = Modifier.fillMaxWidth()
+                                        onClick = { onRunAutoAttendance(selectedDateKey) },
+                                        enabled = unmarkedCount > 0,
+                                        modifier = Modifier.fillMaxWidth().testTag("run_auto_attendance_btn")
                                     ) {
                                         Icon(Icons.Default.AutoMode, contentDescription = null, modifier = Modifier.size(18.dp))
                                         Spacer(Modifier.width(6.dp))
-                                        Text("Run Auto-Mark Now for $selectedDateKey")
+                                        Text(
+                                            if (unmarkedCount > 0) "Run Auto-Mark Now ($unmarkedCount unmarked)" else "All Staff Marked for $selectedDateKey"
+                                        )
                                     }
                                 }
                             }
@@ -370,6 +401,9 @@ fun StaffAndSalaryScreen(
                                                 attendanceList = stAtt,
                                                 advances = stAdv
                                             )
+                                            pdfTargetPhone = member.mobile
+                                            pdfTargetName = member.fullName
+                                            pdfCaption = "${shop.shopName} - Salary Slip ($selectedMonthKey) for ${member.fullName}"
                                         },
                                         modifier = Modifier.weight(1f)
                                     ) {
@@ -658,7 +692,44 @@ fun StaffAndSalaryScreen(
         )
     }
 
+    if (showAutoTimeDialog) {
+        var timeInput by remember { mutableStateOf(shop.autoAttendanceTime.ifBlank { "09:30" }) }
+        AlertDialog(
+            onDismissRequest = { showAutoTimeDialog = false },
+            containerColor = CardWhite,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Auto-Attendance Time", color = RoyalNavy) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Enter daily auto-attendance time in 24-hour HH:mm format (e.g. 09:30 or 10:00).", style = MaterialTheme.typography.bodySmall, color = SlateMuted)
+                    FormInputField(timeInput, { timeInput = it }, "Time (HH:mm)")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val cleaned = timeInput.trim()
+                        if (Regex("^([01]?\\d|2[0-3]):[0-5]\\d$").matches(cleaned)) {
+                            val parts = cleaned.split(":")
+                            val formatted = "%02d:%02d".format(parts[0].toInt(), parts[1].toInt())
+                            onUpdateShop(shop.copy(autoAttendanceTime = formatted), "Auto-Attendance time updated to $formatted")
+                            showAutoTimeDialog = false
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
+                ) { Text("Save Time") }
+            },
+            dismissButton = { TextButton(onClick = { showAutoTimeDialog = false }) { Text("Cancel") } }
+        )
+    }
+
     if (generatedPdf != null) {
-        PdfActionDialog(file = generatedPdf!!, onDismiss = { generatedPdf = null })
+        PdfActionDialog(
+            file = generatedPdf!!,
+            recipientPhone = pdfTargetPhone,
+            recipientName = pdfTargetName,
+            captionText = pdfCaption,
+            onDismiss = { generatedPdf = null }
+        )
     }
 }

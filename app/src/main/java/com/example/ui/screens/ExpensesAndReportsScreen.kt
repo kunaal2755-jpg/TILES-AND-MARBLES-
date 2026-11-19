@@ -341,8 +341,23 @@ fun ReportsScreen(
                 ReportData(
                     "Customer Outstanding Report",
                     listOf("Customers Due: ${due.size}", "Total Due: ${Formatters.currency(due.sumOf { it.outstandingBalance })}"),
-                    listOf("Customer", "Mobile", "Purchases", "Paid", "Balance"),
-                    due.map { listOf(it.name, it.mobile, Formatters.currency(it.totalPurchases), Formatters.currency(it.totalPayments), Formatters.currency(it.outstandingBalance)) }
+                    listOf("Customer", "Mobile", "Village / Address", "Purchases", "Paid", "Balance"),
+                    due.map { c ->
+                        val villageAddr = c.address.ifBlank {
+                            sales.filter { it.customerId == c.id && it.deliveryAddress.isNotBlank() }
+                                .maxByOrNull { it.saleDateMillis }
+                                ?.deliveryAddress
+                                .orEmpty()
+                        }.ifBlank { "-" }
+                        listOf(
+                            c.name,
+                            c.mobile,
+                            villageAddr,
+                            Formatters.currency(c.totalPurchases),
+                            Formatters.currency(c.totalPayments),
+                            Formatters.currency(c.outstandingBalance)
+                        )
+                    }
                 )
             }
             7 -> {

@@ -409,7 +409,8 @@ service cloud.firestore {
                         incoming().diff(existing()).affectedKeys().hasOnly([
                           'shopName', 'ownerName', 'mobile', 'email', 'address', 'gstNumber',
                           'passwordHash', 'secretCodeHash', 'primaryColorHex',
-                          'showPricesOnPdfDefault', 'defaultPaperSize', 'autoAttendanceEnabled',
+                          'showPricesOnPdfDefault', 'showImagesOnSalePdf', 'salePdfImageSize',
+                          'defaultPaperSize', 'autoAttendanceEnabled',
                           'autoAttendanceTime', 'activeDevices', 'dataAccessGranted',
                           'dataAccessReason', 'dataAccessAdminEmail', 'dataAccessExpiryMillis', 'updatedAt'
                         ])) ||
@@ -531,7 +532,7 @@ service cloud.firestore {
                            'invoiceNumber', 'saleDateMillis', 'customerId', 'customerName', 'customerMobile',
                            'deliveryAddress', 'showPricesOnPdf', 'items', 'subtotal', 'discount', 'additionalCharges',
                            'loadingCharges', 'deliveryCharges', 'totalPayable', 'receivedAmount', 'remainingBalance',
-                           'paymentMode', 'paymentDateMillis', 'orderStatus', 'paymentStatus', 'remarks', 'isDeleted', 'updatedAt'
+                           'paymentMode', 'paymentDateMillis', 'paymentHistory', 'orderStatus', 'paymentStatus', 'remarks', 'isDeleted', 'updatedAt'
                          ]);
         allow delete: if false; // Soft delete enforced
       }
@@ -568,7 +569,10 @@ service cloud.firestore {
       }
 
       match /attendance/{attendanceId} {
-        allow get: if isSignedIn() && isValidId(attendanceId) && existing().ownerUid == request.auth.uid;
+        allow get: if isSignedIn() && isValidId(attendanceId) && (
+          (resource == null && get(/databases/$(database)/documents/shops/$(shopId)).data.ownerUid == request.auth.uid) ||
+          (resource != null && existing().ownerUid == request.auth.uid)
+        );
         allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
         allow create: if isSignedIn() && isValidId(attendanceId) && incoming().ownerUid == request.auth.uid &&
                          isValidAttendance(incoming(), shopId) &&
@@ -590,7 +594,10 @@ service cloud.firestore {
       }
 
       match /salary_months/{monthId} {
-        allow get: if isSignedIn() && isValidId(monthId) && existing().ownerUid == request.auth.uid;
+        allow get: if isSignedIn() && isValidId(monthId) && (
+          (resource == null && get(/databases/$(database)/documents/shops/$(shopId)).data.ownerUid == request.auth.uid) ||
+          (resource != null && existing().ownerUid == request.auth.uid)
+        );
         allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
         allow create: if isSignedIn() && isValidId(monthId) && incoming().ownerUid == request.auth.uid &&
                          isValidSalaryMonth(incoming(), shopId) &&

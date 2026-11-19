@@ -12,10 +12,10 @@ import androidx.compose.ui.unit.dp
 private fun buildLightScheme(accentColor: Color = RoyalNavy) = lightColorScheme(
     primary = accentColor,
     onPrimary = Color.White,
-    primaryContainer = NavyTint,
-    onPrimaryContainer = Color.White,
+    primaryContainer = TealSoftWash,
+    onPrimaryContainer = RoyalNavy,
     secondary = AmberGold,
-    onSecondary = RoyalNavy,
+    onSecondary = DeepTealDark,
     secondaryContainer = AmberGoldSoft,
     onSecondaryContainer = AmberGoldDark,
     tertiary = SecondaryNavy,
@@ -24,7 +24,7 @@ private fun buildLightScheme(accentColor: Color = RoyalNavy) = lightColorScheme(
     onBackground = SlateDark,
     surface = CardWhite,
     onSurface = SlateDark,
-    surfaceVariant = Color(0xFFEEF2F6),
+    surfaceVariant = SurfaceElevated,
     onSurfaceVariant = SlateMuted,
     outline = BorderLight,
     error = DangerRed,
@@ -35,27 +35,27 @@ private fun buildLightScheme(accentColor: Color = RoyalNavy) = lightColorScheme(
 
 private val DarkColorScheme = darkColorScheme(
     primary = AmberGold,
-    onPrimary = RoyalNavy,
+    onPrimary = DeepTealDark,
     primaryContainer = SecondaryNavy,
     onPrimaryContainer = Color.White,
     secondary = AmberGold,
-    onSecondary = RoyalNavy,
-    background = RoyalNavy,
+    onSecondary = DeepTealDark,
+    background = DeepTealDark,
     onBackground = Color.White,
-    surface = SecondaryNavy,
+    surface = RoyalNavy,
     onSurface = Color.White,
-    surfaceVariant = NavyTint,
+    surfaceVariant = SecondaryNavy,
     onSurfaceVariant = Color(0xFFCBD5E1),
-    outline = Color(0xFF334155),
+    outline = Color(0xFF28595C),
     error = Color(0xFFF87171),
-    onError = RoyalNavy
+    onError = DeepTealDark
 )
 
 val TileVaultShapes = Shapes(
-    small = RoundedCornerShape(8.dp),
-    medium = RoundedCornerShape(14.dp),
-    large = RoundedCornerShape(18.dp),
-    extraLarge = RoundedCornerShape(24.dp)
+    small = RoundedCornerShape(10.dp),
+    medium = RoundedCornerShape(16.dp),
+    large = RoundedCornerShape(20.dp),
+    extraLarge = RoundedCornerShape(26.dp)
 )
 
 @Composable
@@ -64,10 +64,16 @@ fun TileVaultTheme(
     customPrimaryHex: String? = null,
     content: @Composable () -> Unit,
 ) {
-    val parsedPrimary = customPrimaryHex
-        ?.takeIf { it.startsWith("#") && (it.length == 7 || it.length == 9) }
-        ?.let { runCatching { Color(android.graphics.Color.parseColor(it)) }.getOrNull() }
-        ?: RoyalNavy
+    // Migrate legacy default navy hex transparently to the new architectural teal unless user picked a custom brand color
+    val normalizedHex = customPrimaryHex?.trim()
+    val parsedPrimary = if (normalizedHex.equals("#0B192C", ignoreCase = true) || normalizedHex.isNullOrBlank()) {
+        RoyalNavy
+    } else {
+        normalizedHex
+            .takeIf { it.startsWith("#") && (it.length == 7 || it.length == 9) }
+            ?.let { runCatching { Color(android.graphics.Color.parseColor(it)) }.getOrNull() }
+            ?: RoyalNavy
+    }
 
     val colorScheme = if (darkTheme) DarkColorScheme else buildLightScheme(parsedPrimary)
 

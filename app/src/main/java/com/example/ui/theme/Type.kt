@@ -8,6 +8,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 import com.example.R
 
+val OutfitDisplay = FontFamily(
+    Font(R.font.outfit, FontWeight.Normal),
+    Font(R.font.outfit, FontWeight.Medium),
+    Font(R.font.outfit, FontWeight.SemiBold),
+    Font(R.font.outfit, FontWeight.Bold),
+)
+
 val PlusJakartaSans = FontFamily(
     Font(R.font.plus_jakarta_sans, FontWeight.Normal),
     Font(R.font.plus_jakarta_sans, FontWeight.Medium),
@@ -23,40 +30,41 @@ val JetBrainsMono = FontFamily(
 
 val TileVaultTypography = Typography(
     displaySmall = TextStyle(
-        fontFamily = PlusJakartaSans,
+        fontFamily = OutfitDisplay,
         fontWeight = FontWeight.Bold,
-        fontSize = 28.sp,
-        lineHeight = 34.sp,
-        letterSpacing = (-0.5).sp
+        fontSize = 30.sp,
+        lineHeight = 36.sp,
+        letterSpacing = (-0.6).sp
     ),
     headlineMedium = TextStyle(
-        fontFamily = PlusJakartaSans,
+        fontFamily = OutfitDisplay,
         fontWeight = FontWeight.Bold,
-        fontSize = 22.sp,
-        lineHeight = 28.sp
+        fontSize = 23.sp,
+        lineHeight = 29.sp,
+        letterSpacing = (-0.3).sp
     ),
     headlineSmall = TextStyle(
-        fontFamily = PlusJakartaSans,
+        fontFamily = OutfitDisplay,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 18.sp,
-        lineHeight = 24.sp
+        fontSize = 19.sp,
+        lineHeight = 25.sp
     ),
     titleLarge = TextStyle(
-        fontFamily = PlusJakartaSans,
+        fontFamily = OutfitDisplay,
         fontWeight = FontWeight.Bold,
-        fontSize = 17.sp,
-        lineHeight = 22.sp
+        fontSize = 18.sp,
+        lineHeight = 24.sp
     ),
     titleMedium = TextStyle(
         fontFamily = PlusJakartaSans,
         fontWeight = FontWeight.SemiBold,
         fontSize = 15.sp,
-        lineHeight = 20.sp
+        lineHeight = 21.sp
     ),
     titleSmall = TextStyle(
         fontFamily = PlusJakartaSans,
         fontWeight = FontWeight.SemiBold,
-        fontSize = 13.sp,
+        fontSize = 13.5.sp,
         lineHeight = 18.sp
     ),
     bodyLarge = TextStyle(
@@ -68,13 +76,13 @@ val TileVaultTypography = Typography(
     bodyMedium = TextStyle(
         fontFamily = PlusJakartaSans,
         fontWeight = FontWeight.Normal,
-        fontSize = 13.sp,
-        lineHeight = 18.sp
+        fontSize = 13.5.sp,
+        lineHeight = 19.sp
     ),
     bodySmall = TextStyle(
         fontFamily = PlusJakartaSans,
         fontWeight = FontWeight.Normal,
-        fontSize = 11.sp,
+        fontSize = 11.5.sp,
         lineHeight = 16.sp
     ),
     labelLarge = TextStyle(

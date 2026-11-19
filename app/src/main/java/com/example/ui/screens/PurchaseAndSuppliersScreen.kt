@@ -42,6 +42,9 @@ fun PurchaseAndSuppliersScreen(
     var showPurchaseDialog by remember { mutableStateOf(false) }
     var ledgerSupplier by remember { mutableStateOf<Supplier?>(null) }
     var generatedPdf by remember { mutableStateOf<File?>(null) }
+    var pdfTargetPhone by remember { mutableStateOf<String?>(null) }
+    var pdfTargetName by remember { mutableStateOf<String?>(null) }
+    var pdfCaption by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(openPurchaseTrigger) {
         if (openPurchaseTrigger > 0) {
@@ -235,6 +238,9 @@ fun PurchaseAndSuppliersScreen(
                             headers = listOf("Date", "Invoice", "Total", "Paid", "Due"),
                             rows = supBills.map { listOf(Formatters.date(it.purchaseDateMillis), it.invoiceNumber, Formatters.currency(it.totalAmount), Formatters.currency(it.amountPaid), Formatters.currency(it.remainingDue)) }
                         )
+                        pdfTargetPhone = sup.mobile
+                        pdfTargetName = sup.name
+                        pdfCaption = "${shop.shopName} - Supplier Ledger (${sup.name})"
                         ledgerSupplier = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
@@ -245,7 +251,13 @@ fun PurchaseAndSuppliersScreen(
     }
 
     if (generatedPdf != null) {
-        PdfActionDialog(file = generatedPdf!!, onDismiss = { generatedPdf = null })
+        PdfActionDialog(
+            file = generatedPdf!!,
+            recipientPhone = pdfTargetPhone,
+            recipientName = pdfTargetName,
+            captionText = pdfCaption,
+            onDismiss = { generatedPdf = null }
+        )
     }
 }
 

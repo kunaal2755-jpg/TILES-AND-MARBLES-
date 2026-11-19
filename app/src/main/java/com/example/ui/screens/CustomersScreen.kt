@@ -42,6 +42,9 @@ fun CustomersScreen(
     var ledgerCustomer by remember { mutableStateOf<Customer?>(null) }
     var paymentCustomer by remember { mutableStateOf<Customer?>(null) }
     var generatedPdf by remember { mutableStateOf<File?>(null) }
+    var pdfTargetPhone by remember { mutableStateOf<String?>(null) }
+    var pdfTargetName by remember { mutableStateOf<String?>(null) }
+    var pdfCaption by remember { mutableStateOf<String?>(null) }
 
     val filtered = remember(customers, search) {
         customers.filter {
@@ -65,15 +68,37 @@ fun CustomersScreen(
                     OutlinedButton(
                         onClick = {
                             val dueList = customers.filter { it.outstandingBalance > 0 }
+                            val rows = dueList.map { c ->
+                                val villageAddr = c.address.ifBlank {
+                                    sales.filter { it.customerId == c.id && it.deliveryAddress.isNotBlank() }
+                                        .maxByOrNull { it.saleDateMillis }
+                                        ?.deliveryAddress
+                                        .orEmpty()
+                                }.ifBlank { "-" }
+                                listOf(
+                                    c.name,
+                                    c.mobile,
+                                    villageAddr,
+                                    Formatters.currency(c.totalPurchases),
+                                    Formatters.currency(c.totalPayments),
+                                    Formatters.currency(c.outstandingBalance)
+                                )
+                            }
                             generatedPdf = PdfGenerator.generateTableReportPdf(
                                 context = context,
                                 shop = shop,
                                 reportTitle = "Customer Outstanding Statement",
                                 dateFilterSummary = Formatters.date(System.currentTimeMillis()),
-                                summaryLines = listOf("Total Customers With Due: ${dueList.size}", "Grand Outstanding: ${Formatters.currency(dueList.sumOf { it.outstandingBalance })}"),
-                                headers = listOf("Customer", "Mobile", "Purchases", "Paid", "Due"),
-                                rows = dueList.map { listOf(it.name, it.mobile, Formatters.currency(it.totalPurchases), Formatters.currency(it.totalPayments), Formatters.currency(it.outstandingBalance)) }
+                                summaryLines = listOf(
+                                    "Total Customers With Due: ${dueList.size}",
+                                    "Grand Outstanding: ${Formatters.currency(dueList.sumOf { it.outstandingBalance })}"
+                                ),
+                                headers = listOf("Customer", "Mobile", "Village / Address", "Purchases", "Paid", "Due"),
+                                rows = rows
                             )
+                            pdfTargetPhone = null
+                            pdfTargetName = null
+                            pdfCaption = "${shop.shopName} - Customer Outstanding Statement"
                         },
                         border = androidx.compose.foundation.BorderStroke(1.dp, AmberGold)
                     ) { Text("Outstanding PDF", color = AmberGold) }
@@ -168,7 +193,7 @@ fun CustomersScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     FormInputField(name, { name = it }, "Customer Name *")
                     FormInputField(mobile, { mobile = it }, "Mobile Number *", keyboardType = KeyboardType.Phone)
-                    FormInputField(address, { address = it }, "Address")
+                    FormInputField(address, { address = it }, "Delivery Address / Village (गाँव / पता)")
                     FormInputField(prevBal, { prevBal = it }, "Previous Balance (₹)", keyboardType = KeyboardType.Decimal)
                 }
             },
@@ -223,7 +248,10 @@ fun CustomersScreen(
                             shop = shop,
                             reportTitle = "Payment Receipt",
                             dateFilterSummary = Formatters.date(System.currentTimeMillis()),
-                            summaryLines = listOf("Received From: ${cust.name} (${cust.mobile})", "Amount: ${Formatters.currency(amt)} via $mode"),
+                            summaryLines = listOf(
+                                "Received From: ${cust.name} (${cust.mobile})",
+                                if (cust.address.isNotBlank()) "Village / Address: ${cust.address}" else "Amount: ${Formatters.currency(amt)} via $mode"
+                            ),
                             headers = listOf("Particulars", "Amount"),
                             rows = listOf(
                                 listOf("Previous Balance", Formatters.currency(cust.outstandingBalance)),
@@ -231,6 +259,9 @@ fun CustomersScreen(
                                 listOf("Updated Balance", Formatters.currency((cust.outstandingBalance - amt).coerceAtLeast(0.0)))
                             )
                         )
+                        pdfTargetPhone = cust.mobile
+                        pdfTargetName = cust.name
+                        pdfCaption = "${shop.shopName} - Payment Receipt (${Formatters.currency(amt)} via $mode)"
                         paymentCustomer = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
@@ -284,10 +315,17 @@ fun CustomersScreen(
                             shop = shop,
                             reportTitle = "Customer Ledger - ${cust.name}",
                             dateFilterSummary = "All Transactions",
-                            summaryLines = listOf("Customer: ${cust.name} (${cust.mobile})", "Closing Outstanding: ${Formatters.currency(cust.outstandingBalance)}"),
+                            summaryLines = buildList {
+                                add("Customer: ${cust.name} (${cust.mobile})")
+                                if (cust.address.isNotBlank()) add("Village / Address: ${cust.address}")
+                                add("Closing Outstanding: ${Formatters.currency(cust.outstandingBalance)}")
+                            },
                             headers = listOf("Date", "Particulars", "Amount", "Paid/Note"),
                             rows = ledgerRows.ifEmpty { listOf(listOf("-", "Opening Balance", Formatters.currency(cust.previousBalance), "-")) }
                         )
+                        pdfTargetPhone = cust.mobile
+                        pdfTargetName = cust.name
+                        pdfCaption = "${shop.shopName} - Ledger Statement (${cust.name})"
                         ledgerCustomer = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
@@ -298,6 +336,12 @@ fun CustomersScreen(
     }
 
     if (generatedPdf != null) {
-        PdfActionDialog(file = generatedPdf!!, onDismiss = { generatedPdf = null })
+        PdfActionDialog(
+            file = generatedPdf!!,
+            recipientPhone = pdfTargetPhone,
+            recipientName = pdfTargetName,
+            captionText = pdfCaption,
+            onDismiss = { generatedPdf = null }
+        )
     }
 }

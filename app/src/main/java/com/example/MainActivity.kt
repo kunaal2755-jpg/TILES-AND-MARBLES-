@@ -719,22 +719,29 @@ private fun UserShopWorkspace(
                 },
                 bottomBar = {
                     if (!useNavRail) {
-                        NavigationBar(containerColor = RoyalNavy, contentColor = Color.White) {
-                            primaryRoutes.forEach { dest ->
-                                NavigationBarItem(
-                                    selected = currentRoute == dest.route,
-                                    onClick = { currentRoute = dest.route },
-                                    icon = { Icon(dest.icon, contentDescription = dest.label) },
-                                    label = { Text(dest.label, maxLines = 1) },
-                                    colors = NavigationBarItemDefaults.colors(
-                                        selectedIconColor = RoyalNavy,
-                                        selectedTextColor = AmberGold,
-                                        indicatorColor = AmberGold,
-                                        unselectedIconColor = Color.White.copy(alpha = 0.7f),
-                                        unselectedTextColor = Color.White.copy(alpha = 0.7f)
-                                    ),
-                                    modifier = Modifier.testTag("nav_${dest.route}")
-                                )
+                        Column {
+                            HorizontalDivider(color = BorderLight, thickness = 1.dp)
+                            NavigationBar(
+                                containerColor = CardWhite,
+                                contentColor = RoyalNavy,
+                                tonalElevation = 0.dp
+                            ) {
+                                primaryRoutes.forEach { dest ->
+                                    NavigationBarItem(
+                                        selected = currentRoute == dest.route,
+                                        onClick = { currentRoute = dest.route },
+                                        icon = { Icon(dest.icon, contentDescription = dest.label) },
+                                        label = { Text(dest.label, maxLines = 1) },
+                                        colors = NavigationBarItemDefaults.colors(
+                                            selectedIconColor = RoyalNavy,
+                                            selectedTextColor = RoyalNavy,
+                                            indicatorColor = TealSoftWash,
+                                            unselectedIconColor = SlateMuted,
+                                            unselectedTextColor = SlateMuted
+                                        ),
+                                        modifier = Modifier.testTag("nav_${dest.route}")
+                                    )
+                                }
                             }
                         }
                     }
@@ -801,6 +808,8 @@ private fun UserShopWorkspace(
                             customers = customers,
                             openNewTrigger = newSaleTrigger,
                             onSaveSale = shopViewModel::saveSale,
+                            onDeleteSale = shopViewModel::deleteSale,
+                            onRecordSalePayment = shopViewModel::recordSalePayment,
                             onOpenDeliveryForSale = { saleOrder ->
                                 preselectedDeliverySale = saleOrder
                                 currentRoute = "delivery"
@@ -816,6 +825,7 @@ private fun UserShopWorkspace(
                             activityLogs = activityLogs,
                             onSaveStaff = shopViewModel::saveStaff,
                             onMarkAttendance = shopViewModel::markAttendance,
+                            onRunAutoAttendance = shopViewModel::runAutoAttendanceForDate,
                             onClearAttendanceForDate = shopViewModel::clearAttendanceForDate,
                             onUpdateShop = shopViewModel::updateShopProfile,
                             onSaveAdvance = shopViewModel::saveAdvance,
@@ -881,6 +891,7 @@ private fun UserShopWorkspace(
                             platformConfig = platformConfig,
                             tileSizes = tileSizes,
                             locations = locations,
+                            tiles = tiles,
                             activityLogs = activityLogs,
                             backups = backups,
                             dataAccessRequests = dataAccessRequests,
@@ -889,6 +900,8 @@ private fun UserShopWorkspace(
                             onUpdateShop = shopViewModel::updateShopProfile,
                             onSaveTileSize = shopViewModel::saveTileSize,
                             onSaveLocation = shopViewModel::saveLocation,
+                            onRenameLocation = shopViewModel::renameLocation,
+                            onDeleteLocationWithMigration = shopViewModel::deleteLocationWithMigration,
                             onRunManualBackup = shopViewModel::runManualBackup,
                             onRespondDataAccess = shopViewModel::respondDataAccess,
                             onExportJsonSummary = {

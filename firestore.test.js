@@ -416,3 +416,59 @@ test("shop_directory denies list enumeration and enforces claim proof on first l
   });
   await assertSucceeds(validBatch.commit());
 });
+
+test("Shop owner can update Sale PDF image settings and sales paymentHistory, while cross-user is denied", async () => {
+  const alice = testEnv.authenticatedContext(ALICE_UID, { email: "alice@example.com" }).firestore();
+  await assertSucceeds(alice.collection("shops").doc("shop_alice").set(shopPayload(ALICE_UID)));
+
+  await assertSucceeds(
+    alice.collection("shops").doc("shop_alice").update({
+      showImagesOnSalePdf: false,
+      salePdfImageSize: 60,
+      autoAttendanceTime: "10:00",
+      updatedAt: tsNow(),
+    })
+  );
+
+  const saleRef = alice.collection("shops").doc("shop_alice").collection("sales").doc("sale_1");
+  await assertSucceeds(
+    saleRef.set({
+      ownerUid: ALICE_UID,
+      shopId: "shop_alice",
+      invoiceNumber: "INV-1001",
+      customerName: "Ramesh",
+      totalPayable: 5000,
+      receivedAmount: 1000,
+      remainingBalance: 4000,
+      paymentMode: "Cash",
+      paymentHistory: [{ dateMillis: 1700000000000, amount: 1000, mode: "Cash", note: "Initial" }],
+      orderStatus: "CONFIRMED",
+      paymentStatus: "PARTIAL",
+      isDeleted: false,
+      createdAt: tsNow(),
+      updatedAt: tsNow(),
+    })
+  );
+
+  await assertSucceeds(
+    saleRef.update({
+      receivedAmount: 2500,
+      remainingBalance: 2500,
+      paymentMode: "UPI",
+      paymentHistory: [
+        { dateMillis: 1700000000000, amount: 1000, mode: "Cash", note: "Initial" },
+        { dateMillis: 1700086400000, amount: 1500, mode: "UPI", note: "GPay" },
+      ],
+      updatedAt: tsNow(),
+    })
+  );
+
+  const bob = testEnv.authenticatedContext(BOB_UID, { email: "bob@example.com" }).firestore();
+  await assertFails(
+    bob.collection("shops").doc("shop_alice").collection("sales").doc("sale_1").update({
+      receivedAmount: 0,
+      updatedAt: tsNow(),
+    })
+  );
+});
+

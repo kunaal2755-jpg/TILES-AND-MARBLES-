@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -35,6 +36,7 @@ fun SettingsScreen(
     platformConfig: PlatformConfig,
     tileSizes: List<TileSizeConfig>,
     locations: List<StockLocation>,
+    tiles: List<TileProduct>,
     activityLogs: List<ActivityLog>,
     backups: List<BackupRecord>,
     dataAccessRequests: List<DataAccessRequest>,
@@ -43,6 +45,8 @@ fun SettingsScreen(
     onUpdateShop: (Shop, String) -> Unit,
     onSaveTileSize: (TileSizeConfig) -> Unit,
     onSaveLocation: (StockLocation) -> Unit,
+    onRenameLocation: (StockLocation, String, String) -> Unit,
+    onDeleteLocationWithMigration: (StockLocation, String, Boolean, String) -> Unit,
     onRunManualBackup: () -> Unit,
     onRespondDataAccess: (DataAccessRequest, Boolean) -> Unit,
     onExportJsonSummary: () -> String,
@@ -57,11 +61,19 @@ fun SettingsScreen(
     var address by remember(shop.id, shop.address) { mutableStateOf(shop.address) }
     var gst by remember(shop.id, shop.gstNumber) { mutableStateOf(shop.gstNumber) }
     var primaryHex by remember(shop.id, shop.primaryColorHex) { mutableStateOf(shop.primaryColorHex) }
+    var pdfImgSizeFloat by remember(shop.id, shop.salePdfImageSize) {
+        mutableStateOf(shop.salePdfImageSize.coerceIn(24L, 96L).toFloat())
+    }
+    var autoAttTimeInput by remember(shop.id, shop.autoAttendanceTime) {
+        mutableStateOf(shop.autoAttendanceTime.ifBlank { "09:30" })
+    }
 
     // Dialog states
     var showSizeDialog by remember { mutableStateOf(false) }
     var editingSize by remember { mutableStateOf<TileSizeConfig?>(null) }
     var showLocationDialog by remember { mutableStateOf(false) }
+    var renamingLocation by remember { mutableStateOf<StockLocation?>(null) }
+    var deletingLocation by remember { mutableStateOf<StockLocation?>(null) }
     var showPasswordDialog by remember { mutableStateOf(false) }
     var showSecretCodeDialog by remember { mutableStateOf(false) }
     var notifyLowStock by remember { mutableStateOf(true) }
@@ -88,7 +100,7 @@ fun SettingsScreen(
                 Spacer(Modifier.height(6.dp))
                 FormInputField(gst, { gst = it }, "GST Number")
                 Spacer(Modifier.height(6.dp))
-                FormInputField(primaryHex, { primaryHex = it }, "Primary Theme Color Hex (e.g. #0B192C)")
+                FormInputField(primaryHex, { primaryHex = it }, "Primary Theme Color Hex (e.g. #0F3D3E)")
                 Spacer(Modifier.height(10.dp))
                 Button(
                     onClick = {
@@ -99,7 +111,7 @@ fun SettingsScreen(
                                 mobile = mobile.trim(),
                                 address = address.trim(),
                                 gstNumber = gst.trim(),
-                                primaryColorHex = primaryHex.trim().ifBlank { "#0B192C" }
+                                primaryColorHex = primaryHex.trim().ifBlank { "#0F3D3E" }
                             ),
                             "Shop profile & branding saved!"
                         )
@@ -167,10 +179,10 @@ fun SettingsScreen(
             }
         }
 
-        // 6, 8, 12, 13. PDF, Language, Price & Auto-Attendance Controls
+        // 6, 8, 12, 13. PDF, Language, Price, Sale PDF Images & Auto-Attendance Controls
         item {
             PremiumCard {
-                Text("6, 8, 12 & 13. PDF, Language & Attendance Settings", style = MaterialTheme.typography.titleMedium, color = RoyalNavy)
+                Text("6, 8, 12 & 13. PDF, Image & Attendance Settings", style = MaterialTheme.typography.titleMedium, color = RoyalNavy)
                 Spacer(Modifier.height(8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     Text("Language (English / हिंदी)", style = MaterialTheme.typography.bodyMedium)
@@ -183,14 +195,132 @@ fun SettingsScreen(
                         onCheckedChange = { onUpdateShop(shop.copy(showPricesOnPdfDefault = it), "PDF Price default updated") }
                     )
                 }
+                HorizontalDivider(color = BorderLight, modifier = Modifier.padding(vertical = 8.dp))
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Text("Auto-Attendance (${shop.autoAttendanceTime})", style = MaterialTheme.typography.bodyMedium)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Show Tile Images on Sale PDF", style = MaterialTheme.typography.titleSmall, color = RoyalNavy)
+                        Text("सेल / कोटेशन PDF में टाइल की फोटो दिखाएं (ON/OFF)", style = MaterialTheme.typography.bodySmall, color = SlateMuted)
+                    }
+                    Switch(
+                        checked = shop.showImagesOnSalePdf,
+                        onCheckedChange = {
+                            onUpdateShop(
+                                shop.copy(showImagesOnSalePdf = it),
+                                if (it) "Tile images enabled on Sale PDF" else "Tile images turned OFF on Sale PDF"
+                            )
+                        },
+                        modifier = Modifier.testTag("toggle_sale_pdf_images")
+                    )
+                }
+                if (shop.showImagesOnSalePdf) {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        color = TealSoftWash,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, RoyalNavy.copy(alpha = 0.16f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column {
+                                    Text("Sale PDF Image Size / फोटो साइज़", style = MaterialTheme.typography.titleSmall, color = RoyalNavy)
+                                    Text("${pdfImgSizeFloat.toInt()} pt × ${pdfImgSizeFloat.toInt()} pt", style = MaterialTheme.typography.bodySmall, color = SlateDark)
+                                }
+                                Surface(
+                                    color = CardWhite,
+                                    shape = RoundedCornerShape(8.dp),
+                                    border = BorderStroke(1.dp, RoyalNavy.copy(alpha = 0.4f)),
+                                    modifier = Modifier.size((pdfImgSizeFloat * 0.75f).dp.coerceIn(24.dp, 68.dp))
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Default.Image, contentDescription = "PDF image size preview", tint = RoyalNavy, modifier = Modifier.size(18.dp))
+                                    }
+                                }
+                            }
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("Small" to 32L, "Medium" to 44L, "Large" to 60L, "XL" to 76L).forEach { (lbl, sz) ->
+                                    FilterChip(
+                                        selected = pdfImgSizeFloat.toLong() == sz,
+                                        onClick = {
+                                            pdfImgSizeFloat = sz.toFloat()
+                                            onUpdateShop(shop.copy(salePdfImageSize = sz), "Sale PDF image size set to $lbl ($sz pt)")
+                                        },
+                                        label = { Text("$lbl ($sz)") }
+                                    )
+                                }
+                            }
+                            Slider(
+                                value = pdfImgSizeFloat,
+                                onValueChange = { pdfImgSizeFloat = it },
+                                valueRange = 24f..96f,
+                                steps = 11,
+                                onValueChangeFinished = {
+                                    val chosen = pdfImgSizeFloat.toLong().coerceIn(24L, 96L)
+                                    onUpdateShop(shop.copy(salePdfImageSize = chosen), "Sale PDF image size saved: $chosen pt")
+                                }
+                            )
+                        }
+                    }
+                }
+                HorizontalDivider(color = BorderLight, modifier = Modifier.padding(vertical = 8.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Auto-Attendance (${shop.autoAttendanceTime})", style = MaterialTheme.typography.titleSmall, color = RoyalNavy)
+                        Text("रोज़ तय समय पर ऑटोमैटिक हाज़िरी लगेगी", style = MaterialTheme.typography.bodySmall, color = SlateMuted)
+                    }
                     Switch(
                         checked = shop.autoAttendanceEnabled,
                         onCheckedChange = { onUpdateShop(shop.copy(autoAttendanceEnabled = it), "Auto-Attendance updated") }
                     )
                 }
-                Spacer(Modifier.height(6.dp))
+                if (shop.autoAttendanceEnabled) {
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf("09:00", "09:30", "10:00", "10:30", "11:00").forEach { t ->
+                            FilterChip(
+                                selected = shop.autoAttendanceTime == t,
+                                onClick = {
+                                    autoAttTimeInput = t
+                                    onUpdateShop(shop.copy(autoAttendanceTime = t), "Auto-Attendance time set to $t")
+                                },
+                                label = { Text(t) }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        FormInputField(
+                            value = autoAttTimeInput,
+                            onValueChange = { autoAttTimeInput = it },
+                            label = "Custom Time (HH:mm)",
+                            modifier = Modifier.weight(1f)
+                        )
+                        Button(
+                            onClick = {
+                                val cleaned = autoAttTimeInput.trim()
+                                val valid = Regex("^([01]?\\d|2[0-3]):[0-5]\\d$").matches(cleaned)
+                                if (valid) {
+                                    val parts = cleaned.split(":")
+                                    val formatted = "%02d:%02d".format(parts[0].toInt(), parts[1].toInt())
+                                    autoAttTimeInput = formatted
+                                    onUpdateShop(shop.copy(autoAttendanceTime = formatted), "Auto-Attendance time updated to $formatted")
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
+                        ) { Text("Save") }
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
                 Text("Default PDF Paper Size", style = MaterialTheme.typography.labelMedium, color = RoyalNavy)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("A4", "Letter", "Legal").forEach { paper ->
@@ -231,23 +361,45 @@ fun SettingsScreen(
             }
         }
 
-        // 11. Stock Locations
+        // 11. Stock Locations (Add, Rename & Safe Delete with Tile Migration)
         item {
             PremiumCard {
                 SectionHeaderRow(
-                    title = "11. Stock Locations (${locations.size})",
+                    title = "11. Stock Locations / Warehouses (${locations.size})",
                     actionText = "+ Add Location",
                     onAction = { showLocationDialog = true }
                 )
-                locations.forEach { loc ->
+                locations.forEachIndexed { idx, loc ->
+                    if (idx > 0) HorizontalDivider(color = BorderLight, modifier = Modifier.padding(vertical = 6.dp))
+                    val locTiles = tiles.filter { (it.locationBoxes[loc.name] ?: 0L) > 0L }
+                    val locBoxes = locTiles.sumOf { it.locationBoxes[loc.name] ?: 0L }
                     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.Warehouse, contentDescription = null, tint = RoyalNavy, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Default.Warehouse, contentDescription = null, tint = RoyalNavy, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(loc.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text(loc.name, style = MaterialTheme.typography.titleSmall, color = RoyalNavy, fontWeight = FontWeight.SemiBold)
+                                if (loc.isPrimary) StatusBadge("PRIMARY", AmberGoldSoft, AmberGoldDark)
+                            }
                             if (loc.address.isNotBlank()) Text(loc.address, style = MaterialTheme.typography.bodySmall, color = SlateMuted)
+                            Text(
+                                if (locTiles.isEmpty()) "Empty (0 tiles)" else "${locTiles.size} tiles • $locBoxes boxes stored",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (locTiles.isEmpty()) SlateMuted else SuccessGreen
+                            )
                         }
-                        if (loc.isPrimary) StatusBadge("PRIMARY", AmberGoldSoft, AmberGoldDark)
+                        IconButton(
+                            onClick = { renamingLocation = loc },
+                            modifier = Modifier.testTag("rename_location_${loc.id}")
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = "Rename Warehouse", tint = RoyalNavy)
+                        }
+                        IconButton(
+                            onClick = { deletingLocation = loc },
+                            modifier = Modifier.testTag("delete_location_${loc.id}")
+                        ) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Warehouse", tint = DangerRed)
+                        }
                     }
                 }
             }
@@ -381,6 +533,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showLocationDialog = false },
             containerColor = CardWhite,
+            shape = RoundedCornerShape(20.dp),
             title = { Text("Add Stock Location", color = RoyalNavy) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -399,6 +552,159 @@ fun SettingsScreen(
                 ) { Text("Add Location") }
             },
             dismissButton = { TextButton(onClick = { showLocationDialog = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (renamingLocation != null) {
+        val loc = renamingLocation!!
+        var newName by remember(loc.id) { mutableStateOf(loc.name) }
+        var newAddr by remember(loc.id) { mutableStateOf(loc.address) }
+        val affectedCount = tiles.count { it.locationBoxes.containsKey(loc.name) }
+
+        AlertDialog(
+            onDismissRequest = { renamingLocation = null },
+            containerColor = CardWhite,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Rename Warehouse / वेयरहाउस नाम बदलें", color = RoyalNavy) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (affectedCount > 0) {
+                        Text(
+                            "$affectedCount tile(s) stored in '${loc.name}' will automatically update to the new name.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SlateMuted
+                        )
+                    }
+                    FormInputField(newName, { newName = it }, "Warehouse Name *")
+                    FormInputField(newAddr, { newAddr = it }, "Address / Area")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (newName.isBlank()) return@Button
+                        onRenameLocation(loc, newName.trim(), newAddr.trim())
+                        renamingLocation = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
+                ) { Text("Save Name") }
+            },
+            dismissButton = { TextButton(onClick = { renamingLocation = null }) { Text("Cancel") } }
+        )
+    }
+
+    if (deletingLocation != null) {
+        val loc = deletingLocation!!
+        val affectedTiles = remember(loc, tiles) {
+            tiles.filter { (it.locationBoxes[loc.name] ?: 0L) > 0L }
+        }
+        val affectedBoxes = remember(affectedTiles, loc) {
+            affectedTiles.sumOf { it.locationBoxes[loc.name] ?: 0L }
+        }
+        val otherLocations = remember(locations, loc) {
+            locations.filter { it.id != loc.id }
+        }
+        var migrationMode by remember(loc.id) {
+            mutableStateOf(if (otherLocations.isNotEmpty()) "EXISTING" else "NEW")
+        }
+        var selectedTargetName by remember(loc.id) {
+            mutableStateOf(otherLocations.firstOrNull()?.name ?: "")
+        }
+        var newWarehouseName by remember(loc.id) { mutableStateOf("") }
+        var newWarehouseAddr by remember(loc.id) { mutableStateOf("") }
+
+        val targetName = if (migrationMode == "EXISTING") selectedTargetName else newWarehouseName.trim()
+        val canDelete = if (affectedTiles.isEmpty()) {
+            true
+        } else {
+            targetName.isNotBlank() && !targetName.equals(loc.name, ignoreCase = true)
+        }
+
+        AlertDialog(
+            onDismissRequest = { deletingLocation = null },
+            containerColor = CardWhite,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Warehouse, contentDescription = null, tint = DangerRed)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Delete '${loc.name}'", color = DangerRed)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (affectedTiles.isEmpty()) {
+                        Text(
+                            "इस वेयरहाउस में कोई टाइल स्टॉक नहीं है। क्या आप '${loc.name}' को डिलीट करना चाहते हैं?\n\nThis warehouse has no tiles stored. Delete '${loc.name}'?",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SlateDark
+                        )
+                    } else {
+                        Surface(
+                            color = WarningOrangeSoft,
+                            shape = RoundedCornerShape(10.dp),
+                            border = BorderStroke(1.dp, WarningOrange.copy(alpha = 0.4f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                "इस वेयरहाउस में ${affectedTiles.size} टाइलें ($affectedBoxes बॉक्स) मौजूद हैं! डिलीट करने से पहले चुनें कि ये टाइलें किस वेयरहाउस में शिफ्ट होंगी या नया वेयरहाउस बनाएं।\n\n${affectedTiles.size} tile(s) ($affectedBoxes boxes) are stored here. Choose a destination warehouse before deleting:",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = SlateDark,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+
+                        if (otherLocations.isNotEmpty()) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                RadioButton(selected = migrationMode == "EXISTING", onClick = { migrationMode = "EXISTING" })
+                                Text("Move to Existing Warehouse / पुराने वेयरहाउस में भेजें", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                            }
+                            if (migrationMode == "EXISTING") {
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    otherLocations.forEach { other ->
+                                        FilterChip(
+                                            selected = selectedTargetName == other.name,
+                                            onClick = { selectedTargetName = other.name },
+                                            label = { Text(other.name) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = migrationMode == "NEW", onClick = { migrationMode = "NEW" })
+                            Text("Create New Warehouse & Move / नया वेयरहाउस बनाएं", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.SemiBold)
+                        }
+                        if (migrationMode == "NEW") {
+                            FormInputField(newWarehouseName, { newWarehouseName = it }, "New Warehouse Name *")
+                            FormInputField(newWarehouseAddr, { newWarehouseAddr = it }, "New Warehouse Address")
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteLocationWithMigration(
+                            loc,
+                            if (affectedTiles.isEmpty()) "" else targetName,
+                            affectedTiles.isNotEmpty() && migrationMode == "NEW",
+                            newWarehouseAddr.trim()
+                        )
+                        deletingLocation = null
+                    },
+                    enabled = canDelete,
+                    colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                    modifier = Modifier.testTag("confirm_delete_location_btn")
+                ) {
+                    Text(if (affectedTiles.isEmpty()) "Delete Warehouse" else "Move Tiles & Delete")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deletingLocation = null }) { Text("Cancel") } }
         )
     }
 

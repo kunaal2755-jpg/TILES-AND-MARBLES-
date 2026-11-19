@@ -3,6 +3,9 @@ package com.example.data.repository
 import com.example.base.FirestoreEmulatorTestBase
 import com.example.data.firebase.ShopRepository
 import com.example.data.firebase.SuperAdminRepository
+import com.example.data.model.SaleLineItem
+import com.example.data.model.SaleOrder
+import com.example.data.model.StaffMember
 import com.example.data.model.TileProduct
 import com.google.firebase.firestore.FirebaseFirestoreException
 import kotlinx.coroutines.flow.first
@@ -218,6 +221,336 @@ class ShopRepositoryRuleTest : FirestoreEmulatorTestBase() {
             bobRepo.observeTileSizes(shopkeeperShopId).first { it.isNotEmpty() }
         }
         assertTrue(bobSizes.any { it.name == "2x4" })
+    }
+
+    @Test
+    fun shopSettings_pdfImagesAndAutoAttendanceTime_updatePersists() = runBlocking {
+        signInTestUser(ALICE_EMAIL)
+        val repo = ShopRepository(firestore)
+        val shopId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.createShopWithDefaults(
+                shopName = "Ceramic Studio",
+                ownerName = "Alice",
+                mobile = "9876543210",
+                address = "Morbi",
+                gstNumber = "",
+                passwordPlain = "pass",
+                secretCodePlain = "1234",
+                deviceName = "TestPhone",
+                requiresApproval = false,
+                trialDays = 14L
+            ).getOrThrow()
+        }
+
+        val shop = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeOwnedShops().first { list -> list.any { it.id == shopId } }.first { it.id == shopId }
+        }
+        val res = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.updateShop(
+                shop.copy(
+                    showImagesOnSalePdf = false,
+                    salePdfImageSize = 60L,
+                    autoAttendanceTime = "10:15"
+                )
+            )
+        }
+        assertTrue("updateShop failed: ${res.exceptionOrNull()?.stackTraceToString()}", res.isSuccess)
+
+        val updated = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeOwnedShops().first { list ->
+                list.any { it.id == shopId && !it.showImagesOnSalePdf && it.salePdfImageSize == 60L && it.autoAttendanceTime == "10:15" }
+            }.first { it.id == shopId }
+        }
+        assertFalse(updated.showImagesOnSalePdf)
+        assertEquals(60L, updated.salePdfImageSize)
+        assertEquals("10:15", updated.autoAttendanceTime)
+    }
+
+    @Test
+    fun warehouse_renameAndDeleteWithMigration_movesTilesAtomically() = runBlocking {
+        signInTestUser(ALICE_EMAIL)
+        val repo = ShopRepository(firestore)
+        val shopId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.createShopWithDefaults(
+                shopName = "Warehouse Hub",
+                ownerName = "Alice",
+                mobile = "9876543210",
+                address = "Morbi",
+                gstNumber = "",
+                passwordPlain = "pass",
+                secretCodePlain = "1234",
+                deviceName = "TestPhone",
+                requiresApproval = false,
+                trialDays = 14L
+            ).getOrThrow()
+        }
+
+        val initialLocs = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeLocations(shopId).first { it.size >= 3 }
+        }
+        val wh1 = initialLocs.first { it.name == "Warehouse 1" }
+
+        val tileId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveTileProduct(
+                shopId = shopId,
+                tile = TileProduct(
+                    code = "WH-01",
+                    name = "Statuario Matte",
+                    sizeName = "2x4",
+                    piecesPerBox = 2,
+                    locationBoxes = mapOf("Main Shop" to 5L, "Warehouse 1" to 20L),
+                    sellingPricePerBox = 1200.0
+                ),
+                actorName = "Alice"
+            ).getOrThrow()
+        }
+        val tileBefore = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeTiles(shopId).first { list -> list.any { it.id == tileId } }.first { it.id == tileId }
+        }
+
+        // Rename Warehouse 1 -> North Godown
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.renameLocation(shopId, wh1, "North Godown", "Ring Road", listOf(tileBefore), "Alice").getOrThrow()
+        }
+        val tileAfterRename = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeTiles(shopId).first { list ->
+                list.any { it.id == tileId && it.locationBoxes["North Godown"] == 20L }
+            }.first { it.id == tileId }
+        }
+        assertFalse(tileAfterRename.locationBoxes.containsKey("Warehouse 1"))
+        assertEquals(20L, tileAfterRename.locationBoxes["North Godown"])
+
+        val renamedLoc = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeLocations(shopId).first { list -> list.any { it.name == "North Godown" } }
+                .first { it.name == "North Godown" }
+        }
+
+        // Delete North Godown by creating a brand-new warehouse "South Depot" and moving tiles there
+        val movedCount = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.deleteLocationWithMigration(
+                shopId = shopId,
+                locationToDelete = renamedLoc,
+                targetLocationNameRaw = "South Depot",
+                createNewLocation = true,
+                newLocationAddress = "Highway Sector 4",
+                tiles = listOf(tileAfterRename),
+                actorName = "Alice"
+            ).getOrThrow()
+        }
+        assertEquals(1, movedCount)
+
+        val tileAfterMigrate = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeTiles(shopId).first { list ->
+                list.any { it.id == tileId && it.locationBoxes["South Depot"] == 20L }
+            }.first { it.id == tileId }
+        }
+        assertEquals(25L, tileAfterMigrate.totalBoxes)
+        assertEquals(5L, tileAfterMigrate.locationBoxes["Main Shop"])
+        assertEquals(20L, tileAfterMigrate.locationBoxes["South Depot"])
+
+        val finalLocs = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeLocations(shopId).first { list ->
+                list.any { it.name == "South Depot" } && list.none { it.name == "North Godown" }
+            }
+        }
+        assertTrue(finalLocs.any { it.name == "South Depot" })
+        assertTrue(finalLocs.none { it.name == "North Godown" })
+    }
+
+    @Test
+    fun sale_paymentHistoryAndDeleteWithExactWarehouseStockRestore() = runBlocking {
+        signInTestUser(ALICE_EMAIL)
+        val repo = ShopRepository(firestore)
+        val shopId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.createShopWithDefaults(
+                shopName = "Marble Plaza",
+                ownerName = "Alice",
+                mobile = "9876543210",
+                address = "Morbi",
+                gstNumber = "",
+                passwordPlain = "pass",
+                secretCodePlain = "1234",
+                deviceName = "TestPhone",
+                requiresApproval = false,
+                trialDays = 14L
+            ).getOrThrow()
+        }
+
+        val tileId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveTileProduct(
+                shopId = shopId,
+                tile = TileProduct(
+                    code = "MP-01",
+                    name = "Onyx Ivory",
+                    sizeName = "2x2",
+                    piecesPerBox = 4,
+                    locationBoxes = mapOf("Main Shop" to 3L, "Warehouse 1" to 10L),
+                    sellingPricePerBox = 1000.0
+                ),
+                actorName = "Alice"
+            ).getOrThrow()
+        }
+        val tile = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeTiles(shopId).first { list -> list.any { it.id == tileId } }.first { it.id == tileId }
+        }
+
+        // Sell 5 boxes -> should deduct 3 from Main Shop + 2 from Warehouse 1
+        val saleId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveSaleOrder(
+                shopId = shopId,
+                sale = SaleOrder(
+                    invoiceNumber = "INV-9001",
+                    customerName = "Ramesh Patel",
+                    customerMobile = "9898989898",
+                    deliveryAddress = "Village Rampur",
+                    items = listOf(
+                        SaleLineItem(
+                            tileId = tile.id,
+                            tileCode = tile.code,
+                            tileName = tile.name,
+                            tileSize = tile.sizeName,
+                            piecesPerBox = 4,
+                            fullBoxes = 5L,
+                            ratePerBox = 1000.0,
+                            ratePerPiece = 250.0,
+                            lineTotal = 5000.0
+                        )
+                    ),
+                    subtotal = 5000.0,
+                    totalPayable = 5000.0,
+                    receivedAmount = 2000.0,
+                    remainingBalance = 3000.0,
+                    paymentMode = "Cash",
+                    orderStatus = "CONFIRMED",
+                    paymentStatus = "PARTIAL"
+                ),
+                existingCustomer = null,
+                tilesMap = mapOf(tile.id to tile),
+                previousOrderStatus = null,
+                actorName = "Alice"
+            ).getOrThrow()
+        }
+
+        val tileAfterSale = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeTiles(shopId).first { list -> list.any { it.id == tileId && it.totalBoxes == 8L } }
+                .first { it.id == tileId }
+        }
+        assertEquals(0L, tileAfterSale.locationBoxes["Main Shop"])
+        assertEquals(8L, tileAfterSale.locationBoxes["Warehouse 1"])
+
+        val savedSale = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeSales(shopId).first { list -> list.any { it.id == saleId } }.first { it.id == saleId }
+        }
+        assertEquals(1, savedSale.paymentHistory.size)
+        assertEquals(3L, savedSale.items.first().deductedLocations["Main Shop"])
+        assertEquals(2L, savedSale.items.first().deductedLocations["Warehouse 1"])
+
+        // Add second UPI installment payment
+        val customer = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeCustomers(shopId).first { it.isNotEmpty() }.first()
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.recordSalePayment(
+                shopId = shopId,
+                sale = savedSale,
+                customer = customer,
+                amount = 1500.0,
+                paymentMode = "UPI",
+                note = "GPay transfer",
+                actorName = "Alice"
+            ).getOrThrow()
+        }
+        val saleAfterInstallment = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeSales(shopId).first { list ->
+                list.any { it.id == saleId && it.paymentHistory.size == 2 }
+            }.first { it.id == saleId }
+        }
+        assertEquals(3500.0, saleAfterInstallment.receivedAmount, 0.01)
+        assertEquals(1500.0, saleAfterInstallment.remainingBalance, 0.01)
+        assertEquals("UPI", saleAfterInstallment.paymentHistory[1].mode)
+
+        // Delete bill WITH restoreStock = true -> restores exact 3 to Main Shop and 2 to Warehouse 1
+        val custAfterPay = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeCustomers(shopId).first { list -> list.any { it.id == customer.id && it.totalPayments >= 3500.0 } }
+                .first { it.id == customer.id }
+        }
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.deleteSaleOrder(
+                shopId = shopId,
+                sale = saleAfterInstallment,
+                restoreStock = true,
+                customer = custAfterPay,
+                tilesMap = mapOf(tileAfterSale.id to tileAfterSale),
+                actorName = "Alice"
+            ).getOrThrow()
+        }
+
+        val tileAfterRestore = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeTiles(shopId).first { list -> list.any { it.id == tileId && it.totalBoxes == 13L } }
+                .first { it.id == tileId }
+        }
+        assertEquals(3L, tileAfterRestore.locationBoxes["Main Shop"])
+        assertEquals(10L, tileAfterRestore.locationBoxes["Warehouse 1"])
+
+        val activeSales = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeSales(shopId).first { list -> list.none { it.id == saleId } }
+        }
+        assertTrue(activeSales.none { it.id == saleId })
+    }
+
+    @Test
+    fun autoAttendanceBatch_marksPresentAndWeeklyOffHoliday() = runBlocking {
+        signInTestUser(ALICE_EMAIL)
+        val repo = ShopRepository(firestore)
+        val shopId = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.createShopWithDefaults(
+                shopName = "Staff Studio",
+                ownerName = "Alice",
+                mobile = "9876543210",
+                address = "Morbi",
+                gstNumber = "",
+                passwordPlain = "pass",
+                secretCodePlain = "1234",
+                deviceName = "TestPhone",
+                requiresApproval = false,
+                trialDays = 14L
+            ).getOrThrow()
+        }
+
+        withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.saveStaffMember(
+                shopId,
+                StaffMember(fullName = "Raju", mobile = "9000011111", weeklyOffDay = "Sunday")
+            ).getOrThrow()
+            repo.saveStaffMember(
+                shopId,
+                StaffMember(fullName = "Suresh", mobile = "9000022222", weeklyOffDay = "Monday")
+            ).getOrThrow()
+        }
+        val staffList = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeStaff(shopId).first { it.size == 2 }
+        }
+
+        // 2026-05-10 is a Sunday -> Raju gets HOLIDAY, Suresh gets P
+        val count = withTimeout(DEFAULT_TIMEOUT_MS) {
+            repo.markAutoAttendanceBatch(
+                shopId = shopId,
+                dateKey = "2026-05-10",
+                unmarkedStaff = staffList,
+                autoTime = "09:30",
+                actorName = "Auto-Attendance"
+            ).getOrThrow()
+        }
+        assertEquals(2, count)
+
+        val records = withTimeout(FLOW_TIMEOUT_MS) {
+            repo.observeAttendance(shopId).first { it.size == 2 }
+        }
+        val rajuRec = records.first { it.staffName == "Raju" }
+        val sureshRec = records.first { it.staffName == "Suresh" }
+        assertEquals("HOLIDAY", rajuRec.status)
+        assertEquals("P", sureshRec.status)
+        assertTrue(rajuRec.isAutoMarked)
     }
 
     private companion object {

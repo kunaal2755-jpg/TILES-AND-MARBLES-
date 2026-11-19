@@ -5,13 +5,13 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.print.PrintAttributes
-import android.print.PrintDocumentAdapter
-import android.print.PrintManager
 import android.os.Bundle
 import android.os.CancellationSignal
 import android.os.ParcelFileDescriptor
 import android.print.PageRange
+import android.print.PrintAttributes
+import android.print.PrintDocumentAdapter
+import android.print.PrintManager
 import android.util.Base64
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -53,6 +53,18 @@ object ImageUtils {
 }
 
 object IntentUtils {
+    fun formatWhatsAppDigits(rawPhone: String?): String {
+        if (rawPhone.isNullOrBlank()) return ""
+        var digits = rawPhone.filter { it.isDigit() }
+        if (digits.length == 11 && digits.startsWith("0")) {
+            digits = digits.drop(1)
+        }
+        if (digits.length == 10) {
+            digits = "91$digits"
+        }
+        return if (digits.length >= 10) digits else ""
+    }
+
     fun callPhone(context: Context, phone: String) {
         val cleaned = phone.trim()
         if (cleaned.isBlank()) return
@@ -62,7 +74,7 @@ object IntentUtils {
     }
 
     fun openWhatsApp(context: Context, phone: String, message: String = "") {
-        val digits = phone.filter { it.isDigit() || it == '+' }.removePrefix("+")
+        val digits = formatWhatsAppDigits(phone)
         val encoded = Uri.encode(message)
         val url = if (digits.isNotBlank()) "https://wa.me/$digits?text=$encoded" else "https://wa.me/?text=$encoded"
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
@@ -70,29 +82,60 @@ object IntentUtils {
             .onFailure { Toast.makeText(context, "WhatsApp or browser not available", Toast.LENGTH_SHORT).show() }
     }
 
-    fun sharePdf(context: Context, file: File, title: String = "Share PDF", preferWhatsApp: Boolean = false) {
+    fun sharePdf(
+        context: Context,
+        file: File,
+        title: String = "Share PDF",
+        preferWhatsApp: Boolean = false,
+        phoneNumber: String? = null,
+        captionText: String? = null
+    ) {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+
+        if (preferWhatsApp) {
+            val formattedDigits = formatWhatsAppDigits(phoneNumber)
+            val jid = if (formattedDigits.isNotBlank()) "$formattedDigits@s.whatsapp.net" else null
+            val packagesToTry = listOf("com.whatsapp", "com.whatsapp.w4b")
+
+            for (pkg in packagesToTry) {
+                val waIntent = Intent(Intent.ACTION_SEND).apply {
+                    type = "application/pdf"
+                    setPackage(pkg)
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, title)
+                    if (!captionText.isNullOrBlank()) {
+                        putExtra(Intent.EXTRA_TEXT, captionText)
+                    }
+                    if (!jid.isNullOrBlank()) {
+                        // Directly targets the exact customer's WhatsApp chat with PDF attached
+                        putExtra("jid", jid)
+                    }
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                val launched = runCatching {
+                    context.startActivity(waIntent)
+                    true
+                }.getOrDefault(false)
+                if (launched) return
+            }
+            // Fallback to generic chooser if neither WhatsApp nor WhatsApp Business is installed
+            sharePdf(context, file, title, preferWhatsApp = false, phoneNumber = null, captionText = captionText)
+            return
+        }
+
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "application/pdf"
             putExtra(Intent.EXTRA_STREAM, uri)
             putExtra(Intent.EXTRA_SUBJECT, title)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            if (preferWhatsApp) {
-                setPackage("com.whatsapp")
+            if (!captionText.isNullOrBlank()) {
+                putExtra(Intent.EXTRA_TEXT, captionText)
             }
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         runCatching {
-            if (preferWhatsApp) {
-                context.startActivity(intent)
-            } else {
-                context.startActivity(Intent.createChooser(intent, title))
-            }
+            context.startActivity(Intent.createChooser(intent, title))
         }.onFailure {
-            if (preferWhatsApp) {
-                sharePdf(context, file, title, preferWhatsApp = false)
-            } else {
-                Toast.makeText(context, "No app available to share PDF", Toast.LENGTH_SHORT).show()
-            }
+            Toast.makeText(context, "No app available to share PDF", Toast.LENGTH_SHORT).show()
         }
     }
 

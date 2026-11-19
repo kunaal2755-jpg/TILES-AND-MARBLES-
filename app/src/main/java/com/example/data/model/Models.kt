@@ -106,8 +106,10 @@ data class Shop(
     val subscriptionExpiryMillis: Long = 0L,
     val graceDays: Long = 7L,
     val subscriptionPaid: Double = 0.0,
-    val primaryColorHex: String = "#0B192C",
+    val primaryColorHex: String = "#0F3D3E",
     val showPricesOnPdfDefault: Boolean = true,
+    val showImagesOnSalePdf: Boolean = true,
+    val salePdfImageSize: Long = 44L,
     val defaultPaperSize: String = "A4",
     val autoAttendanceEnabled: Boolean = false,
     val autoAttendanceTime: String = "09:30",
@@ -329,7 +331,8 @@ data class SaleLineItem(
     val isManualItem: Boolean = false,
     val manualUnit: String = "Box",
     val photoBase64: String = "",
-    val deliveredPieces: Long = 0L
+    val deliveredPieces: Long = 0L,
+    val deductedLocations: Map<String, Long> = emptyMap()
 ) {
     @Exclude
     fun totalPieces(): Long = (fullBoxes * piecesPerBox) + loosePieces
@@ -337,6 +340,14 @@ data class SaleLineItem(
     @Exclude
     fun remainingDeliveryPieces(): Long = (totalPieces() - deliveredPieces).coerceAtLeast(0L)
 }
+
+@IgnoreExtraProperties
+data class SalePaymentEntry(
+    val dateMillis: Long = System.currentTimeMillis(),
+    val amount: Double = 0.0,
+    val mode: String = "Cash",
+    val note: String = ""
+)
 
 @IgnoreExtraProperties
 data class SaleOrder(
@@ -361,6 +372,7 @@ data class SaleOrder(
     val remainingBalance: Double = 0.0,
     val paymentMode: String = "Cash",
     val paymentDateMillis: Long = System.currentTimeMillis(),
+    val paymentHistory: List<SalePaymentEntry> = emptyList(),
     val orderStatus: String = "CONFIRMED", // PENDING, CONFIRMED
     val paymentStatus: String = "UNPAID", // PAID, PARTIAL, UNPAID
     val remarks: String = "",

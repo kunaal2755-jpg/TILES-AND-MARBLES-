@@ -8,8 +8,10 @@ import com.example.data.firebase.*
 import com.example.data.model.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 sealed interface UiState<out T> {
     data object Loading : UiState<Nothing>
@@ -108,6 +110,8 @@ class ShopViewModel(
         .catch { emit(emptyList()) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000L), emptyList())
 
+    private var lastAutoAttendanceKey = ""
+
     init {
         viewModelScope.launch {
             prefs.activeShopIdFlow.collect { saved ->
@@ -117,6 +121,58 @@ class ShopViewModel(
             }
         }
         checkBootstrapStatus()
+        startAutoAttendanceWatcher()
+    }
+
+    private fun startAutoAttendanceWatcher() {
+        val minuteTicker = flow {
+            while (true) {
+                emit(System.currentTimeMillis())
+                delay(60_000L)
+            }
+        }
+        viewModelScope.launch {
+            combine(activeShop, staff, attendance, minuteTicker) { shop, staffList, attList, nowMillis ->
+                Triple(shop, staffList, Pair(attList, nowMillis))
+            }.collect { (shop, staffList, attAndNow) ->
+                val (attList, nowMillis) = attAndNow
+                if (shop == null || !shop.autoAttendanceEnabled || staffList.isEmpty()) return@collect
+
+                val parts = shop.autoAttendanceTime.trim().split(":")
+                val targetHour = parts.getOrNull(0)?.toIntOrNull()?.coerceIn(0, 23) ?: 9
+                val targetMin = parts.getOrNull(1)?.toIntOrNull()?.coerceIn(0, 59) ?: 30
+                val cal = Calendar.getInstance().apply { timeInMillis = nowMillis }
+                val nowMinutes = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
+                val scheduledMinutes = targetHour * 60 + targetMin
+                if (nowMinutes < scheduledMinutes) return@collect
+
+                val todayKey = Formatters.dateKey(nowMillis)
+                val markedIds = attList.asSequence()
+                    .filter { it.dateKey == todayKey }
+                    .map { it.staffId }
+                    .toSet()
+                val unmarked = staffList.filter { it.id.isNotBlank() && it.id !in markedIds }
+                if (unmarked.isEmpty()) return@collect
+
+                val runKey = "${shop.id}_${todayKey}_${unmarked.joinToString(",") { it.id }}"
+                if (runKey == lastAutoAttendanceKey) return@collect
+                lastAutoAttendanceKey = runKey
+
+                repository.markAutoAttendanceBatch(
+                    shopId = shop.id,
+                    dateKey = todayKey,
+                    unmarkedStaff = unmarked,
+                    autoTime = shop.autoAttendanceTime,
+                    actorName = "Auto-Attendance"
+                ).onSuccess { count ->
+                    if (count > 0) {
+                        notify("Auto-Attendance marked for $count staff ($todayKey)")
+                    }
+                }.onFailure {
+                    lastAutoAttendanceKey = ""
+                }
+            }
+        }
     }
 
     fun checkBootstrapStatus() {
@@ -330,6 +386,52 @@ class ShopViewModel(
         }
     }
 
+    fun renameLocation(location: StockLocation, newName: String, newAddress: String) {
+        val shop = activeShop.value ?: return
+        viewModelScope.launch {
+            repository.renameLocation(
+                shopId = shop.id,
+                location = location,
+                newNameRaw = newName,
+                newAddressRaw = newAddress,
+                tiles = tiles.value,
+                actorName = shop.ownerName.ifBlank { "Owner" }
+            ).onSuccess {
+                notify("Warehouse renamed to '${newName.trim()}'")
+            }.onFailure {
+                notify("Rename failed: ${it.localizedMessage}")
+            }
+        }
+    }
+
+    fun deleteLocationWithMigration(
+        locationToDelete: StockLocation,
+        targetLocationName: String,
+        createNewLocation: Boolean,
+        newLocationAddress: String
+    ) {
+        val shop = activeShop.value ?: return
+        viewModelScope.launch {
+            repository.deleteLocationWithMigration(
+                shopId = shop.id,
+                locationToDelete = locationToDelete,
+                targetLocationNameRaw = targetLocationName,
+                createNewLocation = createNewLocation,
+                newLocationAddress = newLocationAddress,
+                tiles = tiles.value,
+                actorName = shop.ownerName.ifBlank { "Owner" }
+            ).onSuccess { moved ->
+                if (moved > 0) {
+                    notify("Moved $moved tiles to '${targetLocationName.trim()}' & deleted '${locationToDelete.name}'")
+                } else {
+                    notify("Deleted warehouse '${locationToDelete.name}'")
+                }
+            }.onFailure {
+                notify("Delete failed: ${it.localizedMessage}")
+            }
+        }
+    }
+
     fun saveTile(tile: TileProduct) {
         val shop = activeShop.value ?: return
         viewModelScope.launch {
@@ -431,6 +533,48 @@ class ShopViewModel(
         }
     }
 
+    fun deleteSale(sale: SaleOrder, restoreStock: Boolean) {
+        val shop = activeShop.value ?: return
+        val tilesMap = tiles.value.associateBy { it.id }
+        val cust = customers.value.firstOrNull { it.id == sale.customerId }
+        viewModelScope.launch {
+            repository.deleteSaleOrder(
+                shopId = shop.id,
+                sale = sale,
+                restoreStock = restoreStock,
+                customer = cust,
+                tilesMap = tilesMap,
+                actorName = shop.ownerName.ifBlank { "Owner" }
+            ).onSuccess {
+                val suffix = if (restoreStock && sale.orderStatus == "CONFIRMED") " & stock restored!" else ""
+                notify("Bill #${sale.invoiceNumber} deleted$suffix")
+            }.onFailure {
+                notify("Delete failed: ${it.localizedMessage}")
+            }
+        }
+    }
+
+    fun recordSalePayment(sale: SaleOrder, amount: Double, mode: String, note: String) {
+        val shop = activeShop.value ?: return
+        val cust = customers.value.firstOrNull { it.id == sale.customerId }
+        viewModelScope.launch {
+            repository.recordSalePayment(
+                shopId = shop.id,
+                sale = sale,
+                customer = cust,
+                amount = amount,
+                paymentMode = mode,
+                note = note,
+                paymentDateMillis = System.currentTimeMillis(),
+                actorName = shop.ownerName.ifBlank { "Owner" }
+            ).onSuccess {
+                notify("Recorded ${Formatters.currency(amount)} ($mode) for #${sale.invoiceNumber}")
+            }.onFailure {
+                notify("Payment failed: ${it.localizedMessage}")
+            }
+        }
+    }
+
     fun recordPartialDelivery(
         sale: SaleOrder,
         deliveriesPerIndex: Map<Int, Long>,
@@ -479,6 +623,29 @@ class ShopViewModel(
             repository.markAttendance(shop.id, dateKey, member, status, isAuto, shop.ownerName.ifBlank { "Owner" }, reason)
                 .onSuccess { notify("${member.fullName}: $status") }
                 .onFailure { notify("Attendance failed: ${it.localizedMessage}") }
+        }
+    }
+
+    fun runAutoAttendanceForDate(dateKey: String = Formatters.dateKey()) {
+        val shop = activeShop.value ?: return
+        val markedIds = attendance.value.filter { it.dateKey == dateKey }.map { it.staffId }.toSet()
+        val unmarked = staff.value.filter { it.id.isNotBlank() && it.id !in markedIds }
+        if (unmarked.isEmpty()) {
+            notify("All staff are already marked for $dateKey")
+            return
+        }
+        viewModelScope.launch {
+            repository.markAutoAttendanceBatch(
+                shopId = shop.id,
+                dateKey = dateKey,
+                unmarkedStaff = unmarked,
+                autoTime = shop.autoAttendanceTime,
+                actorName = shop.ownerName.ifBlank { "Owner" }
+            ).onSuccess { count ->
+                notify("Auto-marked $count staff for $dateKey")
+            }.onFailure {
+                notify("Auto-attendance failed: ${it.localizedMessage}")
+            }
         }
     }
 

@@ -45,14 +45,25 @@ fun SalesAndBillingScreen(
     customers: List<Customer>,
     openNewTrigger: Int,
     onSaveSale: (SaleOrder, Customer?, String?) -> Unit,
+    onDeleteSale: (SaleOrder, Boolean) -> Unit,
+    onRecordSalePayment: (SaleOrder, Double, String, String) -> Unit,
     onOpenDeliveryForSale: (SaleOrder) -> Unit
 ) {
     val context = LocalContext.current
     var filterTab by remember { mutableStateOf("ALL") } // ALL, CONFIRMED, PENDING
     var search by remember { mutableStateOf("") }
     var editingSale by remember { mutableStateOf<SaleOrder?>(null) }
+    var deletingSale by remember { mutableStateOf<SaleOrder?>(null) }
+    var paymentSale by remember { mutableStateOf<SaleOrder?>(null) }
     var showBillDialog by remember { mutableStateOf(false) }
     var generatedPdf by remember { mutableStateOf<File?>(null) }
+    var pdfTargetPhone by remember { mutableStateOf<String?>(null) }
+    var pdfTargetName by remember { mutableStateOf<String?>(null) }
+    var pdfCaption by remember { mutableStateOf<String?>(null) }
+
+    val tilePhotosById = remember(tiles) {
+        tiles.associate { it.id to it.photoBase64 }
+    }
 
     LaunchedEffect(openNewTrigger) {
         if (openNewTrigger > 0) {
@@ -123,6 +134,9 @@ fun SalesAndBillingScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     items(filteredSales, key = { it.id }) { sale ->
+                        val resolvedMobile = sale.customerMobile.ifBlank {
+                            customers.firstOrNull { it.id == sale.customerId }?.mobile.orEmpty()
+                        }
                         PremiumCard {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -131,17 +145,31 @@ fun SalesAndBillingScreen(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text("#${sale.invoiceNumber} • ${sale.customerName}", style = MaterialTheme.typography.titleMedium, color = RoyalNavy)
-                                    Text("${Formatters.date(sale.saleDateMillis)} • ${sale.items.size} items", style = MaterialTheme.typography.bodySmall, color = SlateMuted)
+                                    Text("${Formatters.date(sale.saleDateMillis)} • ${sale.items.size} items${if (resolvedMobile.isNotBlank()) " • $resolvedMobile" else ""}", style = MaterialTheme.typography.bodySmall, color = SlateMuted)
                                 }
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(Formatters.currency(sale.totalPayable), style = MaterialTheme.typography.titleMedium, color = RoyalNavy)
-                                    IconButton(onClick = { editingSale = sale; showBillDialog = true }) {
+                                    IconButton(
+                                        onClick = { editingSale = sale; showBillDialog = true },
+                                        modifier = Modifier.testTag("edit_sale_${sale.id}")
+                                    ) {
                                         Icon(Icons.Default.Edit, contentDescription = "Edit Bill", tint = RoyalNavy)
+                                    }
+                                    if (platformConfig.billDeletionAllowed) {
+                                        IconButton(
+                                            onClick = { deletingSale = sale },
+                                            modifier = Modifier.testTag("delete_sale_${sale.id}")
+                                        ) {
+                                            Icon(Icons.Default.Delete, contentDescription = "Delete Bill", tint = DangerRed)
+                                        }
                                     }
                                 }
                             }
                             Spacer(Modifier.height(6.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 StatusBadge(
                                     sale.orderStatus,
                                     if (sale.orderStatus == "CONFIRMED") SuccessGreenSoft else WarningOrangeSoft,
@@ -152,8 +180,14 @@ fun SalesAndBillingScreen(
                                     if (sale.paymentStatus == "PAID") SuccessGreenSoft else DangerRedSoft,
                                     if (sale.paymentStatus == "PAID") SuccessGreen else DangerRed
                                 )
-                                if (sale.remainingBalance > 0) {
+                                if (sale.receivedAmount > 0.0) {
+                                    StatusBadge("Paid: ${Formatters.currency(sale.receivedAmount)}", TealSoftWash, RoyalNavy)
+                                }
+                                if (sale.remainingBalance > 0.01) {
                                     StatusBadge("Due: ${Formatters.currency(sale.remainingBalance)}", DangerRedSoft, DangerRed)
+                                }
+                                if (sale.paymentHistory.size > 1) {
+                                    StatusBadge("${sale.paymentHistory.size} Installments", InfoBlueSoft, InfoBlue)
                                 }
                             }
                             Spacer(Modifier.height(10.dp))
@@ -162,7 +196,18 @@ fun SalesAndBillingScreen(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
                                 OutlinedButton(
-                                    onClick = { generatedPdf = PdfGenerator.generateSalePdf(context, shop, sale, isQuotation = false) },
+                                    onClick = {
+                                        generatedPdf = PdfGenerator.generateSalePdf(
+                                            context = context,
+                                            shop = shop,
+                                            sale = sale,
+                                            isQuotation = false,
+                                            tilePhotosById = tilePhotosById
+                                        )
+                                        pdfTargetPhone = resolvedMobile
+                                        pdfTargetName = sale.customerName
+                                        pdfCaption = "${shop.shopName} - Invoice #${sale.invoiceNumber} (${Formatters.currency(sale.totalPayable)})"
+                                    },
                                     contentPadding = PaddingValues(horizontal = 10.dp)
                                 ) {
                                     Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -170,10 +215,32 @@ fun SalesAndBillingScreen(
                                     Text("Invoice PDF")
                                 }
                                 OutlinedButton(
-                                    onClick = { generatedPdf = PdfGenerator.generateSalePdf(context, shop, sale, isQuotation = true) },
+                                    onClick = {
+                                        generatedPdf = PdfGenerator.generateSalePdf(
+                                            context = context,
+                                            shop = shop,
+                                            sale = sale,
+                                            isQuotation = true,
+                                            tilePhotosById = tilePhotosById
+                                        )
+                                        pdfTargetPhone = resolvedMobile
+                                        pdfTargetName = sale.customerName
+                                        pdfCaption = "${shop.shopName} - Quotation #${sale.invoiceNumber}"
+                                    },
                                     contentPadding = PaddingValues(horizontal = 10.dp)
                                 ) {
                                     Text("Quotation PDF")
+                                }
+                                if (sale.remainingBalance > 0.01) {
+                                    Button(
+                                        onClick = { paymentSale = sale },
+                                        colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                                        contentPadding = PaddingValues(horizontal = 12.dp)
+                                    ) {
+                                        Icon(Icons.Default.Payments, contentDescription = null, modifier = Modifier.size(16.dp))
+                                        Spacer(Modifier.width(4.dp))
+                                        Text("+ Pay")
+                                    }
                                 }
                                 if (sale.orderStatus == "CONFIRMED") {
                                     OutlinedButton(
@@ -221,8 +288,166 @@ fun SalesAndBillingScreen(
         )
     }
 
+    if (deletingSale != null) {
+        val targetSale = deletingSale!!
+        val hasDeductedStock = targetSale.orderStatus == "CONFIRMED" &&
+            targetSale.items.any { !it.isManualItem && it.tileId.isNotBlank() }
+        val deductedSummary = targetSale.items
+            .filter { !it.isManualItem && it.tileId.isNotBlank() }
+            .joinToString("\n") { item ->
+                val locStr = if (item.deductedLocations.isNotEmpty()) {
+                    item.deductedLocations.entries.joinToString(", ") { "${it.key}: ${it.value} Box" }
+                } else {
+                    "${item.fullBoxes} Box"
+                }
+                "• ${item.tileName} ($locStr)"
+            }
+
+        AlertDialog(
+            onDismissRequest = { deletingSale = null },
+            containerColor = CardWhite,
+            shape = RoundedCornerShape(20.dp),
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.DeleteForever, contentDescription = null, tint = DangerRed)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Delete Bill #${targetSale.invoiceNumber}", color = DangerRed)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Customer: ${targetSale.customerName} • ${Formatters.currency(targetSale.totalPayable)}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = RoyalNavy
+                    )
+                    if (hasDeductedStock) {
+                        Text(
+                            "इस बिल की टाइलें स्टॉक से कम हो चुकी हैं। क्या आप इन टाइलों को वापस उसी वेयरहाउस में जोड़ना चाहते हैं जहाँ से कम हुई थीं?\n\nThis confirmed bill deducted stock. Do you want to restore these tiles back to their exact original warehouse(s)?",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SlateDark
+                        )
+                        if (deductedSummary.isNotBlank()) {
+                            Surface(color = LightBackground, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                Text(
+                                    deductedSummary,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = RoyalNavy,
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Button(
+                            onClick = {
+                                onDeleteSale(targetSale, true)
+                                deletingSale = null
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                            modifier = Modifier.fillMaxWidth().testTag("delete_sale_restore_yes_btn")
+                        ) {
+                            Text("हाँ, स्टॉक वापस जोड़ें (Yes, Restore & Delete)")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                onDeleteSale(targetSale, false)
+                                deletingSale = null
+                            },
+                            border = BorderStroke(1.dp, DangerRed),
+                            modifier = Modifier.fillMaxWidth().testTag("delete_sale_restore_no_btn")
+                        ) {
+                            Text("नहीं, बिना स्टॉक जोड़े डिलीट करें (No, Delete Only)", color = DangerRed)
+                        }
+                    } else {
+                        Text(
+                            "क्या आप इस बिल को हटाना चाहते हैं? (Delete this bill permanently from active sales?)",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = SlateDark
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (!hasDeductedStock) {
+                    Button(
+                        onClick = {
+                            onDeleteSale(targetSale, false)
+                            deletingSale = null
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = DangerRed)
+                    ) { Text("Delete Bill") }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingSale = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (paymentSale != null) {
+        val target = paymentSale!!
+        var payAmount by remember(target.id) { mutableStateOf(target.remainingBalance.toString()) }
+        var payMode by remember(target.id) { mutableStateOf("UPI") }
+        var payNote by remember(target.id) { mutableStateOf("") }
+
+        AlertDialog(
+            onDismissRequest = { paymentSale = null },
+            containerColor = CardWhite,
+            shape = RoundedCornerShape(20.dp),
+            title = { Text("Add Payment • #${target.invoiceNumber}", color = RoyalNavy) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Total: ${Formatters.currency(target.totalPayable)} | Paid: ${Formatters.currency(target.receivedAmount)} | Due: ${Formatters.currency(target.remainingBalance)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = SlateDark
+                    )
+                    if (target.paymentHistory.isNotEmpty()) {
+                        Surface(color = LightBackground, shape = RoundedCornerShape(10.dp), modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("Previous Payments / पिछला भुगतान:", style = MaterialTheme.typography.labelSmall, color = RoyalNavy)
+                                target.paymentHistory.forEach { entry ->
+                                    Text(
+                                        "• ${Formatters.date(entry.dateMillis)} • ${entry.mode} • ${Formatters.currency(entry.amount)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = SlateDark
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    FormInputField(payAmount, { payAmount = it }, "Amount Received (₹) *", keyboardType = KeyboardType.Decimal)
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("Cash", "UPI", "Bank").forEach { m ->
+                            FilterChip(selected = payMode == m, onClick = { payMode = m }, label = { Text(m) })
+                        }
+                    }
+                    FormInputField(payNote, { payNote = it }, "Note / Reference (e.g. GPay / Cash)")
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val amt = payAmount.toDoubleOrNull() ?: return@Button
+                        if (amt <= 0.0) return@Button
+                        onRecordSalePayment(target, amt, payMode, payNote)
+                        paymentSale = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+                ) { Text("Save Payment") }
+            },
+            dismissButton = { TextButton(onClick = { paymentSale = null }) { Text("Cancel") } }
+        )
+    }
+
     if (generatedPdf != null) {
-        PdfActionDialog(file = generatedPdf!!, onDismiss = { generatedPdf = null })
+        PdfActionDialog(
+            file = generatedPdf!!,
+            recipientPhone = pdfTargetPhone,
+            recipientName = pdfTargetName,
+            captionText = pdfCaption,
+            onDismiss = { generatedPdf = null }
+        )
     }
 }
 
@@ -525,7 +750,8 @@ private fun SaleBillEditorDialog(
                                             loosePieces = 0L,
                                             ratePerBox = rateBox,
                                             ratePerPiece = ratePcs,
-                                            lineTotal = rateBox
+                                            lineTotal = rateBox,
+                                            photoBase64 = t.photoBase64
                                         )
                                     )
                                     quickSize = t.sizeName

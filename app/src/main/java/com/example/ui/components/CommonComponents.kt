@@ -1,6 +1,5 @@
 package com.example.ui.components
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -44,13 +43,18 @@ fun NavyTopHeader(
     actions: @Composable RowScope.() -> Unit = {}
 ) {
     Surface(
-        color = RoyalNavy,
+        color = Color.Transparent,
         contentColor = Color.White,
-        shadowElevation = 4.dp
+        shadowElevation = 6.dp
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(DeepTealDark, RoyalNavy, SecondaryNavy)
+                    )
+                )
                 .statusBarsPadding()
         ) {
             Row(
@@ -60,19 +64,24 @@ fun NavyTopHeader(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (onBack != null) {
-                    IconButton(
-                        onClick = onBack,
+                    Surface(
+                        color = Color.White.copy(alpha = 0.12f),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
-                            .size(48.dp)
+                            .size(44.dp)
+                            .clickable(onClick = onBack)
                             .testTag("header_back_button")
                     ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
-                            tint = Color.White
-                        )
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
                     }
-                    Spacer(Modifier.width(4.dp))
+                    Spacer(Modifier.width(12.dp))
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -83,9 +92,10 @@ fun NavyTopHeader(
                         overflow = TextOverflow.Ellipsis
                     )
                     if (subtitle.isNotBlank()) {
+                        Spacer(Modifier.height(1.dp))
                         Text(
                             text = subtitle,
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.labelSmall,
                             color = AmberGold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
@@ -94,9 +104,9 @@ fun NavyTopHeader(
                 }
                 if (onToggleLanguage != null) {
                     Surface(
-                        color = SecondaryNavy,
+                        color = Color.White.copy(alpha = 0.12f),
                         shape = RoundedCornerShape(20.dp),
-                        border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.5f)),
+                        border = BorderStroke(1.dp, AmberGold.copy(alpha = 0.55f)),
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .clickable(onClick = onToggleLanguage)
@@ -116,10 +126,10 @@ fun NavyTopHeader(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(3.dp)
+                    .height(2.5.dp)
                     .background(
                         Brush.horizontalGradient(
-                            listOf(AmberGold, AmberGold.copy(alpha = 0.4f), RoyalNavy)
+                            listOf(AmberGold, AmberGold.copy(alpha = 0.45f), Color.Transparent)
                         )
                     )
             )
@@ -137,9 +147,9 @@ fun PremiumCard(
         modifier = modifier
             .fillMaxWidth()
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = CardWhite),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp),
         border = BorderStroke(1.dp, BorderLight)
     ) {
         Column(modifier = Modifier.padding(16.dp), content = content)
@@ -158,49 +168,60 @@ fun KpiTileCard(
     Card(
         modifier = modifier
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = CardWhite),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp),
         border = BorderStroke(1.dp, BorderLight)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(accentColor.copy(alpha = 0.12f)),
-                    contentAlignment = Alignment.Center
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(accentColor.copy(alpha = 0.05f), CardWhite)
+                    )
+                )
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(icon, contentDescription = title, tint = accentColor, modifier = Modifier.size(20.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(accentColor.copy(alpha = 0.13f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(icon, contentDescription = title, tint = accentColor, modifier = Modifier.size(20.dp))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .width(18.dp)
+                            .height(4.dp)
+                            .clip(CircleShape)
+                            .background(accentColor.copy(alpha = 0.7f))
+                    )
                 }
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(accentColor)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    text = value,
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = SlateDark,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = SlateMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
-            Spacer(Modifier.height(10.dp))
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                color = SlateDark,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodySmall,
-                color = SlateMuted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
         }
     }
 }
@@ -210,6 +231,7 @@ fun StatusBadge(text: String, bgColor: Color, textColor: Color) {
     Surface(
         color = bgColor,
         shape = RoundedCornerShape(50),
+        border = BorderStroke(0.8.dp, textColor.copy(alpha = 0.22f)),
         modifier = Modifier.padding(vertical = 2.dp)
     ) {
         Text(
@@ -264,7 +286,7 @@ fun EmptyStateView(
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .size(width = 210.dp, height = 150.dp)
-                .clip(RoundedCornerShape(16.dp))
+                .clip(RoundedCornerShape(18.dp))
         )
         Spacer(Modifier.height(16.dp))
         Text(
@@ -283,6 +305,7 @@ fun EmptyStateView(
             Button(
                 onClick = onAction,
                 colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy),
+                shape = RoundedCornerShape(12.dp),
                 modifier = Modifier.minimumInteractiveComponentSize()
             ) {
                 Icon(Icons.Default.Add, contentDescription = null)
@@ -334,7 +357,13 @@ fun FormInputField(
             androidx.compose.ui.text.input.VisualTransformation.None
         },
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(14.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = RoyalNavy,
+            unfocusedBorderColor = BorderLight,
+            focusedContainerColor = CardWhite,
+            unfocusedContainerColor = SurfaceElevated
+        ),
         modifier = modifier.fillMaxWidth()
     )
 }
@@ -351,12 +380,14 @@ fun ConfirmDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = CardWhite,
+        shape = RoundedCornerShape(22.dp),
         title = { Text(title, style = MaterialTheme.typography.titleLarge, color = RoyalNavy) },
         text = { Text(message, style = MaterialTheme.typography.bodyMedium, color = SlateDark) },
         confirmButton = {
             Button(
                 onClick = onConfirm,
-                colors = ButtonDefaults.buttonColors(containerColor = confirmColor)
+                colors = ButtonDefaults.buttonColors(containerColor = confirmColor),
+                shape = RoundedCornerShape(12.dp)
             ) { Text(confirmText) }
         },
         dismissButton = {
@@ -378,11 +409,21 @@ fun SectionHeaderRow(
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            color = RoyalNavy
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .height(18.dp)
+                    .clip(CircleShape)
+                    .background(AmberGold)
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium,
+                color = RoyalNavy
+            )
+        }
         if (actionText != null && onAction != null) {
             TextButton(onClick = onAction) {
                 Text(actionText, color = AmberGoldDark, fontWeight = FontWeight.SemiBold)

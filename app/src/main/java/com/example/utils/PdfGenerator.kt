@@ -1,12 +1,10 @@
 package com.example.utils
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
@@ -39,11 +37,13 @@ data class CataloguePdfConfig(
 
 object PdfGenerator {
 
-    private val NAVY = Color.parseColor("#0B192C")
-    private val GOLD = Color.parseColor("#EAB308")
+    private val PRIMARY = Color.parseColor("#0F3D3E")
+    private val ACCENT = Color.parseColor("#D97706")
     private val SLATE = Color.parseColor("#475569")
-    private val BORDER = Color.parseColor("#CBD5E1")
-    private val SOFT_BG = Color.parseColor("#F8FAFC")
+    private val BORDER = Color.parseColor("#D6D3CD")
+    private val SOFT_BG = Color.parseColor("#F6F5F1")
+    private val GREEN = Color.parseColor("#15803D")
+    private val RED = Color.parseColor("#DC2626")
 
     private fun pageDimensions(paperSize: String): Pair<Int, Int> = when (paperSize.uppercase()) {
         "LETTER" -> 612 to 792
@@ -64,8 +64,8 @@ object PdfGenerator {
         subtitleDate: String = Formatters.date(System.currentTimeMillis())
     ): Float {
         val headerPad = 24f
-        val bgPaint = Paint().apply { color = NAVY; style = Paint.Style.FILL }
-        val goldPaint = Paint().apply { color = GOLD; style = Paint.Style.FILL }
+        val bgPaint = Paint().apply { color = PRIMARY; style = Paint.Style.FILL }
+        val accentPaint = Paint().apply { color = ACCENT; style = Paint.Style.FILL }
 
         val titlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
@@ -77,17 +77,18 @@ object PdfGenerator {
             textSize = 9.5f
         }
         val rightTitlePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = GOLD
+            color = Color.parseColor("#FCD34D")
             textSize = 13f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             textAlign = Paint.Align.RIGHT
         }
 
-        val leftWidth = (pageWidth - headerPad * 2 - 170f).toInt().coerceAtLeast(180)
+        val leftWidth = (pageWidth - headerPad * 2 - 175f).toInt().coerceAtLeast(180)
+        val shopTitle = shop.shopName.ifBlank { "TileVault Showroom" }
         val nameLayout = StaticLayout.Builder.obtain(
-            shop.shopName.ifBlank { "TileVault Showroom" },
+            shopTitle,
             0,
-            shop.shopName.ifBlank { "TileVault Showroom" }.length,
+            shopTitle.length,
             titlePaint,
             leftWidth
         ).setAlignment(Layout.Alignment.ALIGN_NORMAL).build()
@@ -111,7 +112,7 @@ object PdfGenerator {
 
         val headerHeight = maxOf(86f, 24f + nameLayout.height + 6f + detailsLayout.height + 16f)
         canvas.drawRect(0f, 0f, pageWidth.toFloat(), headerHeight, bgPaint)
-        canvas.drawRect(0f, headerHeight - 4f, pageWidth.toFloat(), headerHeight, goldPaint)
+        canvas.drawRect(0f, headerHeight - 4f, pageWidth.toFloat(), headerHeight, accentPaint)
 
         canvas.save()
         canvas.translate(headerPad, 16f)
@@ -141,7 +142,7 @@ object PdfGenerator {
         }
         val linePaint = Paint().apply { color = BORDER; strokeWidth = 0.8f }
         canvas.drawLine(24f, pageHeight - 28f, pageWidth - 24f, pageHeight - 28f, linePaint)
-        canvas.drawText("TileVault Commercial Management System", 24f, pageHeight - 14f, paint)
+        canvas.drawText("Tiles & Marbles Commercial Management System", 24f, pageHeight - 14f, paint)
         paint.textAlign = Paint.Align.RIGHT
         canvas.drawText("Page $pageNum", pageWidth - 24f, pageHeight - 14f, paint)
     }
@@ -177,7 +178,7 @@ object PdfGenerator {
         val cardBgPaint = Paint().apply { color = Color.WHITE; style = Paint.Style.FILL }
         val headStripPaint = Paint().apply { color = SOFT_BG; style = Paint.Style.FILL }
         val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = NAVY
+            color = PRIMARY
             textSize = 10.5f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
@@ -186,7 +187,7 @@ object PdfGenerator {
             textSize = 8.5f
         }
         val pricePaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#16A34A")
+            color = GREEN
             textSize = 10.5f
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         }
@@ -310,7 +311,10 @@ object PdfGenerator {
         shop: Shop,
         sale: SaleOrder,
         isQuotation: Boolean = false,
-        paperSize: String = shop.defaultPaperSize
+        paperSize: String = shop.defaultPaperSize,
+        tilePhotosById: Map<String, String> = emptyMap(),
+        showImagesOverride: Boolean? = null,
+        imageSizeOverride: Float? = null
     ): File {
         val (pageW, pageH) = pageDimensions(paperSize)
         val doc = PdfDocument()
@@ -320,67 +324,144 @@ object PdfGenerator {
         val title = if (isQuotation) "QUOTATION" else if (sale.orderStatus == "PENDING") "ORDER ESTIMATE" else "SALES INVOICE"
         var y = drawShopHeader(canvas, pageW, shop, "$title #${sale.invoiceNumber}", Formatters.date(sale.saleDateMillis))
 
+        val includeImages = showImagesOverride ?: shop.showImagesOnSalePdf
+        val imgDim = (imageSizeOverride ?: shop.salePdfImageSize.toFloat()).coerceIn(24f, 96f)
+        val fallbackBmp = if (includeImages) {
+            runCatching { BitmapFactory.decodeResource(context.resources, R.drawable.img_sample_marble) }.getOrNull()
+        } else null
+
         val margin = 24f
-        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = NAVY; textSize = 11f; typeface = Typeface.DEFAULT_BOLD }
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SLATE; textSize = 9.5f }
+        val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = PRIMARY; textSize = 11f; typeface = Typeface.DEFAULT_BOLD }
+        val itemBoldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = PRIMARY; textSize = 9.5f; typeface = Typeface.DEFAULT_BOLD }
+        val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = SLATE; textSize = 9.2f }
+        val smallTextPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = SLATE; textSize = 8.4f }
         val linePaint = Paint().apply { color = BORDER; strokeWidth = 0.8f }
-        val headerBg = Paint().apply { color = NAVY }
-        val whiteBold = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 9f; typeface = Typeface.DEFAULT_BOLD }
+        val imgBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = BORDER; style = Paint.Style.STROKE; strokeWidth = 0.8f }
+        val softBoxPaint = Paint().apply { color = SOFT_BG; style = Paint.Style.FILL }
+        val headerBg = Paint().apply { color = PRIMARY }
+        val whiteBold = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 8.8f; typeface = Typeface.DEFAULT_BOLD }
+        val greenBold = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = GREEN; textSize = 10f; typeface = Typeface.DEFAULT_BOLD }
+        val redBold = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = RED; textSize = 10.5f; typeface = Typeface.DEFAULT_BOLD }
 
-        canvas.drawText("Bill To: ${sale.customerName}", margin, y + 12f, boldPaint)
-        canvas.drawText("Mobile: ${sale.customerMobile}   |   Status: ${sale.orderStatus} / ${sale.paymentStatus}", margin, y + 26f, textPaint)
-        if (sale.deliveryAddress.isNotBlank()) {
-            canvas.drawText("Delivery Address: ${sale.deliveryAddress}", margin, y + 40f, textPaint)
-            y += 54f
-        } else {
-            y += 40f
-        }
-
-        // Table Header
-        canvas.drawRect(margin, y, pageW - margin, y + 22f, headerBg)
-        canvas.drawText("Item / Size / Code", margin + 6f, y + 14f, whiteBold)
-        canvas.drawText("Boxes", pageW - 235f, y + 14f, whiteBold)
-        canvas.drawText("Loose", pageW - 190f, y + 14f, whiteBold)
-        canvas.drawText("Pcs", pageW - 145f, y + 14f, whiteBold)
-        if (sale.showPricesOnPdf) {
-            canvas.drawText("Rate", pageW - 105f, y + 14f, whiteBold)
-            canvas.drawText("Total", pageW - 55f, y + 14f, whiteBold)
-        }
-        y += 28f
-
-        sale.items.forEachIndexed { index, item ->
-            if (y > pageH - 120f) {
+        fun ensureSpace(neededHeight: Float) {
+            if (y + neededHeight > pageH - 42f) {
                 drawFooter(canvas, pageW, pageH, pageNum)
                 doc.finishPage(page)
                 pageNum++
                 page = doc.startPage(PdfDocument.PageInfo.Builder(pageW, pageH, pageNum).create())
                 canvas = page.canvas
-                y = 30f
+                y = 28f
             }
-            canvas.drawText("${index + 1}. ${item.tileName} (${item.tileSize})", margin + 6f, y + 10f, boldPaint.apply { textSize = 9.5f })
-            canvas.drawText(item.tileCode.ifBlank { if (item.isManualItem) "Manual" else "-" }, margin + 16f, y + 22f, textPaint)
-            canvas.drawText("${item.fullBoxes}", pageW - 230f, y + 12f, textPaint)
-            canvas.drawText("${item.loosePieces}", pageW - 185f, y + 12f, textPaint)
-            canvas.drawText("${item.totalPieces()}", pageW - 142f, y + 12f, textPaint)
+        }
+
+        // Customer details box
+        val custBoxTop = y
+        val custInfoW = (pageW - margin * 2 - 20f).toInt()
+        val addrText = if (sale.deliveryAddress.isNotBlank()) "Delivery Address / Village: ${sale.deliveryAddress}" else ""
+        val addrLayout = if (addrText.isNotBlank()) {
+            StaticLayout.Builder.obtain(addrText, 0, addrText.length, textPaint, custInfoW).build()
+        } else null
+        val custBoxH = 38f + (addrLayout?.height?.plus(6f) ?: 0f)
+        canvas.drawRoundRect(RectF(margin, custBoxTop, pageW - margin, custBoxTop + custBoxH), 6f, 6f, softBoxPaint)
+        canvas.drawRoundRect(RectF(margin, custBoxTop, pageW - margin, custBoxTop + custBoxH), 6f, 6f, imgBorderPaint)
+
+        canvas.drawText("Bill To: ${sale.customerName}", margin + 10f, custBoxTop + 15f, boldPaint)
+        canvas.drawText("Mobile: ${sale.customerMobile.ifBlank { "-" }}   |   Status: ${sale.orderStatus} / ${sale.paymentStatus}", margin + 10f, custBoxTop + 29f, textPaint)
+        if (addrLayout != null) {
+            canvas.save()
+            canvas.translate(margin + 10f, custBoxTop + 34f)
+            addrLayout.draw(canvas)
+            canvas.restore()
+        }
+        y = custBoxTop + custBoxH + 12f
+
+        val colPhotoW = if (includeImages) (imgDim + 10f) else 0f
+        val colBoxesX = pageW - 228f
+        val colLooseX = pageW - 188f
+        val colPcsX = pageW - 150f
+        val colRateX = pageW - 110f
+        val colTotalX = pageW - 58f
+        val itemTextX = margin + 6f + colPhotoW
+        val itemTextMaxW = (colBoxesX - itemTextX - 6f).toInt().coerceAtLeast(90)
+
+        fun drawItemsHeader() {
+            canvas.drawRect(margin, y, pageW - margin, y + 22f, headerBg)
+            if (includeImages) {
+                canvas.drawText("Photo", margin + 6f, y + 14f, whiteBold)
+            }
+            canvas.drawText("Item / Size / Code", itemTextX, y + 14f, whiteBold)
+            canvas.drawText("Boxes", colBoxesX, y + 14f, whiteBold)
+            canvas.drawText("Loose", colLooseX, y + 14f, whiteBold)
+            canvas.drawText("Pcs", colPcsX, y + 14f, whiteBold)
             if (sale.showPricesOnPdf) {
-                canvas.drawText(Formatters.currency(item.ratePerBox), pageW - 108f, y + 12f, textPaint)
-                canvas.drawText(Formatters.currency(item.lineTotal), pageW - 60f, y + 12f, boldPaint)
+                canvas.drawText("Rate", colRateX, y + 14f, whiteBold)
+                canvas.drawText("Total", colTotalX, y + 14f, whiteBold)
             }
-            y += 28f
+            y += 26f
+        }
+        drawItemsHeader()
+
+        sale.items.forEachIndexed { index, item ->
+            val titleStr = "${index + 1}. ${item.tileName} (${item.tileSize})"
+            val titleLayout = StaticLayout.Builder.obtain(titleStr, 0, titleStr.length, itemBoldPaint, itemTextMaxW).setMaxLines(2).build()
+            val codeStr = item.tileCode.ifBlank { if (item.isManualItem) "Manual (${item.manualUnit})" else "-" }
+            val textBlockH = titleLayout.height + 16f
+            val rowH = maxOf(textBlockH, if (includeImages) imgDim + 8f else 30f)
+
+            if (y + rowH + 8f > pageH - 44f) {
+                drawFooter(canvas, pageW, pageH, pageNum)
+                doc.finishPage(page)
+                pageNum++
+                page = doc.startPage(PdfDocument.PageInfo.Builder(pageW, pageH, pageNum).create())
+                canvas = page.canvas
+                y = 28f
+                drawItemsHeader()
+            }
+
+            if (includeImages) {
+                val imgTop = y + (rowH - imgDim) / 2f
+                val imgRect = RectF(margin + 4f, imgTop, margin + 4f + imgDim, imgTop + imgDim)
+                canvas.drawRect(imgRect, softBoxPaint)
+                val rawPhoto = item.photoBase64.ifBlank { tilePhotosById[item.tileId].orEmpty() }
+                val bmp = ImageUtils.decodeBase64Bitmap(rawPhoto) ?: fallbackBmp
+                if (bmp != null) {
+                    canvas.drawBitmap(bmp, null, imgRect, null)
+                }
+                canvas.drawRect(imgRect, imgBorderPaint)
+            }
+
+            canvas.save()
+            canvas.translate(itemTextX, y + 4f)
+            titleLayout.draw(canvas)
+            canvas.restore()
+            canvas.drawText("Code: $codeStr", itemTextX, y + titleLayout.height + 14f, smallTextPaint)
+
+            val valBaseline = y + (rowH / 2f) + 3f
+            canvas.drawText("${item.fullBoxes}", colBoxesX + 4f, valBaseline, textPaint)
+            canvas.drawText("${item.loosePieces}", colLooseX + 4f, valBaseline, textPaint)
+            canvas.drawText("${item.totalPieces()}", colPcsX + 2f, valBaseline, textPaint)
+            if (sale.showPricesOnPdf) {
+                canvas.drawText(Formatters.currency(item.ratePerBox), colRateX - 2f, valBaseline, smallTextPaint)
+                canvas.drawText(Formatters.currency(item.lineTotal), colTotalX - 4f, valBaseline, itemBoldPaint)
+            }
+            y += rowH + 4f
             canvas.drawLine(margin, y, pageW - margin, y, linePaint)
-            y += 6f
+            y += 5f
         }
 
         if (sale.showPricesOnPdf) {
-            y += 10f
-            val sumX = pageW - 200f
+            ensureSpace(135f)
+            y += 6f
+            val sumX = pageW - 220f
             val valX = pageW - 28f
             val rightText = Paint(textPaint).apply { textAlign = Paint.Align.RIGHT }
             val rightBold = Paint(boldPaint).apply { textAlign = Paint.Align.RIGHT; textSize = 11.5f }
+            val rightGreen = Paint(greenBold).apply { textAlign = Paint.Align.RIGHT }
+            val rightRed = Paint(redBold).apply { textAlign = Paint.Align.RIGHT }
 
-            fun row(lbl: String, v: String, bold: Boolean = false) {
-                canvas.drawText(lbl, sumX, y + 12f, if (bold) boldPaint else textPaint)
-                canvas.drawText(v, valX, y + 12f, if (bold) rightBold else rightText)
+            fun row(lbl: String, v: String, bold: Boolean = false, customValPaint: Paint? = null) {
+                canvas.drawText(lbl, sumX, y + 12f, if (bold) itemBoldPaint else textPaint)
+                canvas.drawText(v, valX, y + 12f, customValPaint ?: if (bold) rightBold else rightText)
                 y += 17f
             }
             row("Subtotal:", Formatters.currency(sale.subtotal))
@@ -390,10 +471,99 @@ object PdfGenerator {
             if (sale.additionalCharges > 0) row("Additional Charges:", Formatters.currency(sale.additionalCharges))
             canvas.drawLine(sumX, y, valX, y, linePaint)
             y += 6f
-            row("Grand Total:", Formatters.currency(sale.totalPayable), bold = true)
+            row("Grand Total (कुल बिल):", Formatters.currency(sale.totalPayable), bold = true)
             if (!isQuotation) {
-                row("Received (${sale.paymentMode}):", Formatters.currency(sale.receivedAmount))
-                row("Balance Due:", Formatters.currency(sale.remainingBalance), bold = true)
+                row("Total Received (कुल प्राप्त):", Formatters.currency(sale.receivedAmount), bold = true, customValPaint = rightGreen)
+                val balLabel = if (sale.remainingBalance <= 0.01) "PAID (चुकता)" else Formatters.currency(sale.remainingBalance)
+                row(
+                    "Remaining Balance (शेष बकाया):",
+                    balLabel,
+                    bold = true,
+                    customValPaint = if (sale.remainingBalance <= 0.01) rightGreen else rightRed
+                )
+            }
+
+            // Detailed Payment History Section (Date, Mode, Cash/UPI/Bank breakdown & Remaining Due)
+            if (!isQuotation) {
+                val effectiveHistory = sale.paymentHistory.ifEmpty {
+                    if (sale.receivedAmount > 0.0) {
+                        listOf(
+                            SalePaymentEntry(
+                                dateMillis = if (sale.paymentDateMillis > 0L) sale.paymentDateMillis else sale.saleDateMillis,
+                                amount = sale.receivedAmount,
+                                mode = sale.paymentMode.ifBlank { "Cash" },
+                                note = "Bill Payment"
+                            )
+                        )
+                    } else emptyList()
+                }.sortedBy { it.dateMillis }
+
+                y += 10f
+                ensureSpace(88f)
+                canvas.drawText("PAYMENT HISTORY / भुगतान विवरण", margin, y + 12f, boldPaint)
+                y += 18f
+
+                if (effectiveHistory.isEmpty()) {
+                    canvas.drawRoundRect(RectF(margin, y, pageW - margin, y + 26f), 5f, 5f, softBoxPaint)
+                    canvas.drawRoundRect(RectF(margin, y, pageW - margin, y + 26f), 5f, 5f, imgBorderPaint)
+                    canvas.drawText(
+                        "No payment received yet. Full Balance Due: ${Formatters.currency(sale.remainingBalance)}",
+                        margin + 10f,
+                        y + 16f,
+                        redBold.apply { textSize = 9.5f }
+                    )
+                    y += 32f
+                } else {
+                    fun drawPaymentHeader() {
+                        canvas.drawRect(margin, y, pageW - margin, y + 20f, headerBg)
+                        canvas.drawText("#", margin + 6f, y + 13f, whiteBold)
+                        canvas.drawText("Date", margin + 28f, y + 13f, whiteBold)
+                        canvas.drawText("Mode (Cash/UPI/Bank)", margin + 125f, y + 13f, whiteBold)
+                        canvas.drawText("Note", margin + 255f, y + 13f, whiteBold)
+                        canvas.drawText("Amount", pageW - margin - 62f, y + 13f, whiteBold)
+                        y += 24f
+                    }
+                    drawPaymentHeader()
+
+                    var runningReceived = 0.0
+                    effectiveHistory.forEachIndexed { idx, entry ->
+                        if (y > pageH - 65f) {
+                            drawFooter(canvas, pageW, pageH, pageNum)
+                            doc.finishPage(page)
+                            pageNum++
+                            page = doc.startPage(PdfDocument.PageInfo.Builder(pageW, pageH, pageNum).create())
+                            canvas = page.canvas
+                            y = 28f
+                            drawPaymentHeader()
+                        }
+                        runningReceived += entry.amount
+                        canvas.drawText("${idx + 1}", margin + 6f, y + 11f, textPaint)
+                        canvas.drawText(Formatters.date(entry.dateMillis), margin + 28f, y + 11f, textPaint)
+                        canvas.drawText(entry.mode.ifBlank { "Cash" }, margin + 125f, y + 11f, itemBoldPaint)
+                        canvas.drawText(entry.note.ifBlank { "Payment" }.take(28), margin + 255f, y + 11f, smallTextPaint)
+                        canvas.drawText(Formatters.currency(entry.amount), pageW - margin - 62f, y + 11f, greenBold.apply { textSize = 9.5f })
+                        y += 17f
+                        canvas.drawLine(margin, y, pageW - margin, y, linePaint)
+                        y += 4f
+                    }
+
+                    // Mode-wise summary strip (Cash / UPI / Bank) + Final Due
+                    ensureSpace(46f)
+                    y += 4f
+                    val byMode = effectiveHistory.groupBy { it.mode.ifBlank { "Cash" } }
+                        .entries.joinToString("   |   ") { (m, list) -> "$m: ${Formatters.currency(list.sumOf { it.amount })}" }
+                    canvas.drawRoundRect(RectF(margin, y, pageW - margin, y + 40f), 6f, 6f, softBoxPaint)
+                    canvas.drawRoundRect(RectF(margin, y, pageW - margin, y + 40f), 6f, 6f, imgBorderPaint)
+                    canvas.drawText("Mode Breakdown: $byMode", margin + 10f, y + 15f, itemBoldPaint)
+                    val summaryLine = "Total Bill: ${Formatters.currency(sale.totalPayable)}   |   Total Paid: ${Formatters.currency(sale.receivedAmount)}   |   Balance Due: ${Formatters.currency(sale.remainingBalance)}"
+                    canvas.drawText(
+                        summaryLine,
+                        margin + 10f,
+                        y + 31f,
+                        if (sale.remainingBalance > 0.01) redBold.apply { textSize = 9.5f } else greenBold.apply { textSize = 9.5f }
+                    )
+                    y += 46f
+                }
             }
         }
 
@@ -413,9 +583,9 @@ object PdfGenerator {
         var y = drawShopHeader(canvas, pageW, shop, "DELIVERY CHALLAN", Formatters.date(delivery.deliveryDateMillis))
 
         val margin = 24f
-        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = NAVY; textSize = 11f; typeface = Typeface.DEFAULT_BOLD }
+        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = PRIMARY; textSize = 11f; typeface = Typeface.DEFAULT_BOLD }
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SLATE; textSize = 9.5f }
-        val headerBg = Paint().apply { color = NAVY }
+        val headerBg = Paint().apply { color = PRIMARY }
         val whiteBold = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 9f; typeface = Typeface.DEFAULT_BOLD }
 
         canvas.drawText("Invoice #: ${delivery.invoiceNumber}   |   Customer: ${delivery.customerName}", margin, y + 12f, boldPaint)
@@ -462,7 +632,7 @@ object PdfGenerator {
         var y = drawShopHeader(canvas, pageW, shop, "STAFF SALARY SLIP", monthRecord.monthKey)
 
         val margin = 24f
-        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = NAVY; textSize = 11f; typeface = Typeface.DEFAULT_BOLD }
+        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = PRIMARY; textSize = 11f; typeface = Typeface.DEFAULT_BOLD }
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SLATE; textSize = 9.5f }
         val linePaint = Paint().apply { color = BORDER; strokeWidth = 0.8f }
 
@@ -473,7 +643,6 @@ object PdfGenerator {
         canvas.drawText("Attendance Summary: Present=${monthRecord.presentDays}, Half=${monthRecord.halfDays}, Absent=${monthRecord.absentDays}, Holiday/Off=${monthRecord.weeklyOffDays}", margin, y, boldPaint.apply { textSize = 9.5f })
         y += 18f
 
-        // Attendance Dates grid
         attendanceList.sortedBy { it.dateKey }.chunked(4).forEach { row ->
             val line = row.joinToString("   |   ") { "${it.dateKey.takeLast(5)}: ${it.status}" }
             canvas.drawText(line, margin, y, textPaint)
@@ -521,11 +690,11 @@ object PdfGenerator {
         var canvas = page.canvas
         var y = drawShopHeader(canvas, pageW, shop, reportTitle.uppercase(), dateFilterSummary)
 
-        val margin = 24f
-        val boldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = NAVY; textSize = 10f; typeface = Typeface.DEFAULT_BOLD }
-        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = SLATE; textSize = 9f }
-        val headerBg = Paint().apply { color = NAVY }
-        val whiteBold = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 8.5f; typeface = Typeface.DEFAULT_BOLD }
+        val margin = 22f
+        val boldPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = PRIMARY; textSize = 9.5f; typeface = Typeface.DEFAULT_BOLD }
+        val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = SLATE; textSize = 8.4f }
+        val headerBg = Paint().apply { color = PRIMARY }
+        val whiteBold = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 8.2f; typeface = Typeface.DEFAULT_BOLD }
         val linePaint = Paint().apply { color = BORDER; strokeWidth = 0.7f }
 
         summaryLines.forEach { line ->
@@ -534,20 +703,46 @@ object PdfGenerator {
         }
         y += 8f
 
-        val colCount = headers.size.coerceAtLeast(1)
-        val colW = (pageW - margin * 2) / colCount
+        val totalTableW = pageW - margin * 2
+        val weights = headers.map { h ->
+            when {
+                h.contains("Address", true) || h.contains("Village", true) || h.contains("Description", true) || h.contains("Particulars", true) -> 1.65f
+                h.contains("Customer", true) || h.contains("Supplier", true) || h.contains("Tile", true) || h.contains("Name", true) -> 1.25f
+                else -> 0.9f
+            }
+        }
+        val weightSum = weights.sum().coerceAtLeast(1f)
+        val colWidths = weights.map { (it / weightSum) * totalTableW }
+        val colOffsets = buildList {
+            var acc = margin
+            colWidths.forEach { w ->
+                add(acc)
+                acc += w
+            }
+        }
 
         fun drawTableHeader() {
-            canvas.drawRect(margin, y, pageW - margin, y + 20f, headerBg)
+            canvas.drawRect(margin, y, pageW - margin, y + 22f, headerBg)
             headers.forEachIndexed { i, h ->
-                canvas.drawText(h.take(18), margin + 4f + i * colW, y + 13f, whiteBold)
+                val maxW = (colWidths[i] - 6f).toInt().coerceAtLeast(24)
+                val hl = StaticLayout.Builder.obtain(h, 0, h.length, whiteBold, maxW).setMaxLines(1).build()
+                canvas.save()
+                canvas.translate(colOffsets[i] + 3f, y + 5f)
+                hl.draw(canvas)
+                canvas.restore()
             }
-            y += 25f
+            y += 26f
         }
         drawTableHeader()
 
         rows.forEach { row ->
-            if (y > pageH - 45f) {
+            val layouts = row.mapIndexed { i, cell ->
+                val maxW = (colWidths.getOrElse(i) { 60f } - 6f).toInt().coerceAtLeast(24)
+                val clean = cell.ifBlank { "-" }
+                StaticLayout.Builder.obtain(clean, 0, clean.length, textPaint, maxW).setMaxLines(3).build()
+            }
+            val rowH = (layouts.maxOfOrNull { it.height } ?: 12) + 8f
+            if (y + rowH > pageH - 42f) {
                 drawFooter(canvas, pageW, pageH, pageNum)
                 doc.finishPage(page)
                 pageNum++
@@ -556,12 +751,17 @@ object PdfGenerator {
                 y = 28f
                 drawTableHeader()
             }
-            row.forEachIndexed { i, cell ->
-                canvas.drawText(cell.take(22), margin + 4f + i * colW, y + 11f, textPaint)
+            layouts.forEachIndexed { i, layout ->
+                if (i < colOffsets.size) {
+                    canvas.save()
+                    canvas.translate(colOffsets[i] + 3f, y + 3f)
+                    layout.draw(canvas)
+                    canvas.restore()
+                }
             }
-            y += 17f
+            y += rowH
             canvas.drawLine(margin, y, pageW - margin, y, linePaint)
-            y += 4f
+            y += 3f
         }
 
         drawFooter(canvas, pageW, pageH, pageNum)

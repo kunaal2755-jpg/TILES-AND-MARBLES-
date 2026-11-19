@@ -43,6 +43,9 @@ fun DeliveryAndReturnScreen(
     var activeSaleForDelivery by remember(preselectedSale) { mutableStateOf(preselectedSale) }
     var showReturnDialog by remember { mutableStateOf(false) }
     var generatedPdf by remember { mutableStateOf<File?>(null) }
+    var pdfTargetPhone by remember { mutableStateOf<String?>(null) }
+    var pdfTargetName by remember { mutableStateOf<String?>(null) }
+    var pdfCaption by remember { mutableStateOf<String?>(null) }
 
     val confirmedSales = remember(sales) { sales.filter { it.orderStatus == "CONFIRMED" } }
 
@@ -96,7 +99,16 @@ fun DeliveryAndReturnScreen(
                             }
                             OutlinedButton(onClick = {
                                 val file = PdfGenerator.generateDeliveryChallanPdf(context, shop, del)
-                                IntentUtils.sharePdf(context, file, "Delivery Challan", preferWhatsApp = true)
+                                val custPhone = customers.firstOrNull { it.id == del.customerId }?.mobile
+                                    ?: sales.firstOrNull { it.id == del.saleId }?.customerMobile
+                                IntentUtils.sharePdf(
+                                    context = context,
+                                    file = file,
+                                    title = "Delivery Challan",
+                                    preferWhatsApp = true,
+                                    phoneNumber = custPhone,
+                                    captionText = "${shop.shopName} - Delivery Challan #${del.invoiceNumber}"
+                                )
                             }) { Text("WhatsApp PDF") }
                         }
                     }
@@ -190,6 +202,11 @@ fun DeliveryAndReturnScreen(
                         onRecordPartialDelivery(sale, map, loadingStr.toDoubleOrNull() ?: 0.0, remarks) { rec ->
                             activeSaleForDelivery = null
                             generatedPdf = PdfGenerator.generateDeliveryChallanPdf(context, shop, rec)
+                            pdfTargetPhone = sale.customerMobile.ifBlank {
+                                customers.firstOrNull { it.id == sale.customerId }?.mobile.orEmpty()
+                            }
+                            pdfTargetName = sale.customerName
+                            pdfCaption = "${shop.shopName} - Delivery Challan #${sale.invoiceNumber}"
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = RoyalNavy)
@@ -213,7 +230,13 @@ fun DeliveryAndReturnScreen(
     }
 
     if (generatedPdf != null) {
-        PdfActionDialog(file = generatedPdf!!, onDismiss = { generatedPdf = null })
+        PdfActionDialog(
+            file = generatedPdf!!,
+            recipientPhone = pdfTargetPhone,
+            recipientName = pdfTargetName,
+            captionText = pdfCaption,
+            onDismiss = { generatedPdf = null }
+        )
     }
 }
 

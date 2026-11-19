@@ -629,20 +629,81 @@ private fun PdfCheckRow(label: String, checked: Boolean, onChange: (Boolean) -> 
 }
 
 @Composable
-fun PdfActionDialog(file: File, onDismiss: () -> Unit) {
+fun PdfActionDialog(
+    file: File,
+    recipientPhone: String? = null,
+    recipientName: String? = null,
+    captionText: String? = null,
+    onDismiss: () -> Unit
+) {
     val context = LocalContext.current
+    val hasPhone = !recipientPhone.isNullOrBlank() && recipientPhone.filter { it.isDigit() }.length >= 10
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = CardWhite,
-        title = { Text("PDF Ready", color = RoyalNavy) },
-        text = { Text("Generated ${file.name}. Open, print, or share directly via WhatsApp.", style = MaterialTheme.typography.bodyMedium) },
+        shape = RoundedCornerShape(20.dp),
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = RoyalNavy)
+                Spacer(Modifier.width(8.dp))
+                Text("PDF Ready", color = RoyalNavy)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Generated ${file.name}. Open, print, or share via WhatsApp.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = SlateDark
+                )
+                if (hasPhone) {
+                    Surface(
+                        color = SuccessGreenSoft,
+                        shape = RoundedCornerShape(12.dp),
+                        border = BorderStroke(1.dp, SuccessGreen.copy(alpha = 0.35f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Chat, contentDescription = null, tint = SuccessGreen, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
+                            Column {
+                                Text(
+                                    "Direct WhatsApp Ready",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = SuccessGreen,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    "${recipientName?.ifBlank { "Customer" } ?: "Customer"} • $recipientPhone",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = SlateDark
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 OutlinedButton(onClick = { IntentUtils.viewPdf(context, file) }) { Text("Open") }
                 OutlinedButton(onClick = { IntentUtils.printPdf(context, file, file.name) }) { Text("Print") }
                 Button(
-                    onClick = { IntentUtils.sharePdf(context, file, file.name, preferWhatsApp = true) },
-                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen)
+                    onClick = {
+                        IntentUtils.sharePdf(
+                            context = context,
+                            file = file,
+                            title = file.name,
+                            preferWhatsApp = true,
+                            phoneNumber = if (hasPhone) recipientPhone else null,
+                            captionText = captionText
+                        )
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = SuccessGreen),
+                    modifier = Modifier.testTag("pdf_whatsapp_button")
                 ) { Text("WhatsApp") }
             }
         },
